@@ -18,6 +18,8 @@ export type Item = {
   required_level: number;
   stats: Record<string, number>;
   affixes: { key: string; value: number }[];
+  statRanges?: Record<string, { min: number; max: number }>;
+  magicSchool?: "chain" | "fire" | "frost" | null;
   width: number;
   height: number;
   rotated: number;
@@ -39,39 +41,65 @@ export type Item = {
   set: { id: string; name: string } | null;
 };
 
-export const SLOTS = ["Head", "Chest", "Gloves", "Legs", "Boots", "Weapon", "Offhand", "Neck", "Ring1", "Ring2", "Accessory"];
+export const SLOTS = ["Head", "Chest", "Gloves", "Legs", "Boots", "Weapon", "Offhand", "Neck", "Ring1", "Ring2"] as const;
+
+export const EQUIP_LAYOUT: { slot: (typeof SLOTS)[number]; pos: string }[] = [
+  { slot: "Head", pos: "head" },
+  { slot: "Neck", pos: "neck" },
+  { slot: "Gloves", pos: "gloves" },
+  { slot: "Chest", pos: "chest" },
+  { slot: "Offhand", pos: "offhand" },
+  { slot: "Weapon", pos: "weapon" },
+  { slot: "Legs", pos: "legs" },
+  { slot: "Ring1", pos: "ring1" },
+  { slot: "Ring2", pos: "ring2" },
+  { slot: "Boots", pos: "boots" },
+];
+
+export const STAT_KEYS = [
+  "health",
+  "damage",
+  "magicDamage",
+  "armor",
+  "dodge",
+  "regen",
+  "luck",
+  "critChance",
+  "critDamage",
+  "lifesteal",
+  "poison",
+  "poisonChance",
+  "bleed",
+  "bleedChance",
+  "thorns",
+  "barrier",
+] as const;
 
 export const STAT_LABEL: Record<string, string> = {
   health: "Health",
-  damage: "Damage",
+  damage: "Physical Damage",
+  magicDamage: "Magic Damage",
   armor: "Armor",
+  dodge: "Dodge",
+  regen: "Regen",
+  luck: "Luck",
   critChance: "Crit Chance",
   critDamage: "Crit Damage",
-  attackSpeed: "Attack Speed",
-  dodge: "Dodge",
   lifesteal: "Lifesteal",
-  armorPen: "Armor Pen",
-  regen: "Regen",
-  goldFind: "Gold Find",
-  lootChance: "Loot Chance",
   poison: "Poison",
+  poisonChance: "Poison Chance",
   bleed: "Bleed",
-  fire: "Fire",
-  mining: "Mining",
-  undeadDamage: "vs Undead",
-  execute: "Execute",
+  bleedChance: "Bleed Chance",
+  thorns: "Thorns",
+  barrier: "Barrier",
 };
 
 export const PCT = new Set([
+  "dodge",
+  "luck",
   "critChance",
   "critDamage",
-  "attackSpeed",
-  "dodge",
   "lifesteal",
-  "armorPen",
-  "goldFind",
-  "lootChance",
-  "mining",
-  "undeadDamage",
-  "execute",
+  "poisonChance",
+  "bleedChance",
 ]);

@@ -32,12 +32,17 @@ CREATE TABLE IF NOT EXISTS characters (
   xp INTEGER NOT NULL DEFAULT 0,
   region INTEGER NOT NULL DEFAULT 1,
   round INTEGER NOT NULL DEFAULT 1,
+  depth INTEGER NOT NULL DEFAULT 0,
+  map_state TEXT,
   hp INTEGER NOT NULL,
   max_hp INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'ALIVE' CHECK (status IN ('ALIVE', 'DEAD')),
   location TEXT NOT NULL DEFAULT 'WILD' CHECK (location IN ('WILD', 'CITY')),
   skill_pending INTEGER NOT NULL DEFAULT 0,
   skill_offers TEXT,
+  loot_pending TEXT,
+  talent_points INTEGER NOT NULL DEFAULT 0,
+  talent_tree TEXT,
   enemies_defeated INTEGER NOT NULL DEFAULT 0,
   gold_earned INTEGER NOT NULL DEFAULT 0,
   best_item_name TEXT,
@@ -315,4 +320,9 @@ CREATE TABLE IF NOT EXISTS ground_loot (
   character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
   instance_id TEXT NOT NULL REFERENCES item_instances(id),
   PRIMARY KEY (character_id, instance_id)
+);
+
+CREATE TABLE IF NOT EXISTS world_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );

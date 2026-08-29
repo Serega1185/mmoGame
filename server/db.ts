@@ -19,6 +19,36 @@ try {
 } catch {
   /* already present */
 }
+try {
+  db.exec("ALTER TABLE characters ADD COLUMN loot_pending TEXT");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("ALTER TABLE characters ADD COLUMN talent_points INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("ALTER TABLE characters ADD COLUMN talent_tree TEXT");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("ALTER TABLE characters ADD COLUMN depth INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("ALTER TABLE characters ADD COLUMN map_state TEXT");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("CREATE TABLE IF NOT EXISTS world_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+} catch {
+  /* already present */
+}
 
 export function now() {
   return Date.now();
