@@ -42,10 +42,14 @@ export function MarchMap({
   march,
   interactive,
   onPick,
+  packTwo = 10,
+  packThree = 1,
 }: {
   march: MarchView;
   interactive: boolean;
   onPick: (id: string) => void;
+  packTwo?: number;
+  packThree?: number;
 }) {
   const { t } = useI18n();
   const byId = new Map(march.nodes.map((n) => [n.id, n]));
@@ -117,6 +121,9 @@ export function MarchMap({
       <div className="section-title">{t("mapTitle")}</div>
       <p className="muted map-hint">{t("mapHint")}</p>
       <div className="march-pan" ref={panBox} onMouseDown={onPanDown}>
+        <div className="pack-odds" title={t("packOddsTip", { two: packTwo, three: packThree })}>
+          {t("packOddsShort", { two: packTwo, three: packThree })}
+        </div>
         <svg className="march-svg" viewBox={`0 0 ${W} ${H}`} role="img" style={{ width: W * scale, height: H * scale }}>
           {march.nodes.flatMap((n) =>
             n.next.map((nid) => {

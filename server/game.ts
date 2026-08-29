@@ -20,6 +20,7 @@ import { rollLoot, clearGround } from "./engine/loot.ts";
 import { addCoins, spendCoins, logGame } from "./engine/economy.ts";
 import { defaultDropConfig, loadDropConfig, saveDropConfig } from "./engine/dropTables.ts";
 import { loadGate, saveGate } from "./engine/gate.ts";
+import { defaultPackConfig, loadPackConfig, packOddsFor, rollPackExtra, savePackConfig } from "./engine/packTables.ts";
 import { applyTalentPick, canPickTalent, ensureTalentTree, freshTalentTree } from "./engine/talents.ts";
 import {
   combatKind,
@@ -118,6 +119,8 @@ export function snapshotCharacter(c: Record<string, unknown>) {
     talentPoints,
     region,
     grid: { cols: CONFIG.GRID_COLS, rows: CONFIG.GRID_ROWS },
+    pendingFight: publicPendingFight(march),
+    packOdds: packOddsFor(Number(c.depth || 0)),
   };
 }
 
@@ -311,11 +314,11 @@ function toFoe(enemy: EnemyRow) {
   };
 }
 
-function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss"): EnemyRow[] {
+function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss", depth: number): EnemyRow[] {
   const enemy = pickEnemy(regionId, kind) as EnemyRow;
   const pack = [enemy];
   if (kind === "normal") {
-    const extra = Math.random() < 0.42 ? 1 : Math.random() < 0.18 ? 2 : 0;
+    const extra = rollPackExtra(depth);
     const region = db.prepare("SELECT enemy_pool FROM regions WHERE id = ?").get(regionId) as { enemy_pool: string };
     const pool = JSON.parse(region.enemy_pool || "[]") as string[];
     for (let i = 0; i < extra; i++) {
@@ -325,6 +328,26 @@ function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss"): Ene
     }
   }
   return pack;
+}
+
+function packView(pack: EnemyRow[]) {
+  return pack.map((e, i) => ({
+    id: `${e.id}#${i}`,
+    name: e.name,
+    kind: e.kind,
+    hp: e.hp,
+    maxHp: e.hp,
+    damage: e.damage,
+  }));
+}
+
+function publicPendingFight(march: MarchState) {
+  const pf = march.pendingFight;
+  if (!pf?.enemyIds?.length) return null;
+  const pack = pf.enemyIds
+    .map((id) => db.prepare("SELECT * FROM enemies WHERE id = ?").get(id) as EnemyRow | undefined)
+    .filter((e): e is EnemyRow => !!e);
+  return pack.length ? packView(pack) : null;
 }
 
 function grantLoot(userId: string, character: Record<string, unknown>, power: { stats: { luck: number } }, enemyKind: string, ref: string) {
@@ -345,9 +368,8 @@ function grantLoot(userId: string, character: Record<string, unknown>, power: { 
   return loot;
 }
 
-function runCombat(userId: string, character: Record<string, unknown>, kind: "normal" | "elite" | "boss") {
+function runCombat(userId: string, character: Record<string, unknown>, kind: "normal" | "elite" | "boss", pack: EnemyRow[]) {
   clearGround(String(character.id));
-  const pack = pickEncounter(Number(character.region), kind);
   const enemy = pack[0]!;
   const power = characterPower({
     id: String(character.id),
@@ -364,15 +386,11 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
     magicSchool: power.magicSchool,
     talents: power.talentIds,
   };
-  const foes = pack.map(toFoe);
+  const foes = pack.map((e, i) => ({ ...toFoe(e), id: `${e.id}#${i}` }));
   const result = simulateCombat(player, foes);
-  const enemiesOut = pack.map((e, i) => ({
-    id: e.id,
-    name: e.name,
-    kind: e.kind,
+  const enemiesOut = packView(pack).map((e, i) => ({
+    ...e,
     hp: Math.max(0, Math.round(foes[i]!.hp)),
-    maxHp: e.hp,
-    damage: e.damage,
   }));
   if (result.won) {
     const loot = rollLoot({
@@ -426,7 +444,25 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
 }
 
 export function startCombat(userId: string) {
-  return { error: "Choose a path on the map." };
+  return tx(() => {
+    const { error, character } = requireAlive(userId);
+    if (error || !character) return { error: error || "No character" };
+    if (character.location === "CITY") return { error: "Leave the city first." };
+    if (parseIdList(character.loot_pending).length) return { error: "Choose your spoils first." };
+    const state = ensureMarch(character);
+    const pf = state.pendingFight;
+    if (!pf?.enemyIds?.length) return { error: "Choose a path on the map." };
+    const pack = pf.enemyIds
+      .map((id) => db.prepare("SELECT * FROM enemies WHERE id = ?").get(id) as EnemyRow | undefined)
+      .filter((e): e is EnemyRow => !!e);
+    if (!pack.length) return { error: "The ambush has scattered." };
+    state.pendingFight = null;
+    saveMarch(character.id, state);
+    character.map_state = JSON.stringify(state);
+    const fight = runCombat(userId, character, pf.kind, pack);
+    if (fight.error) return fight;
+    return { error: null, action: "fight" as const, ...(fight.result ?? {}) };
+  });
 }
 
 export function travel(userId: string, nodeId: string) {
@@ -479,9 +515,12 @@ export function travel(userId: string, nodeId: string) {
 
     const ck = combatKind(resolved);
     if (!ck) return { error: "That path is closed." };
-    const fight = runCombat(userId, character, ck);
-    if (fight.error) return fight;
-    return { error: null, action: "fight" as const, ...(fight.result ?? {}) };
+    const pack = pickEncounter(Number(character.region), ck, Number(character.depth || 0));
+    state.pendingFight = { kind: ck, enemyIds: pack.map((e) => e.id) };
+    saveMarch(character.id, state);
+    character.map_state = JSON.stringify(state);
+    const enemies = packView(pack);
+    return { error: null, action: "ambush" as const, enemy: enemies[0], enemies };
   });
 }
 
@@ -1228,6 +1267,22 @@ export function adminSaveDropTables(raw: unknown) {
 export function adminResetDropTables() {
   const cfg = saveDropConfig(defaultDropConfig());
   logGame("ADMIN", "loot rarity tables reset");
+  return cfg;
+}
+
+export function adminPackTables() {
+  return loadPackConfig();
+}
+
+export function adminSavePackTables(raw: unknown) {
+  const cfg = savePackConfig(raw);
+  logGame("ADMIN", "pack odds tables saved");
+  return cfg;
+}
+
+export function adminResetPackTables() {
+  const cfg = savePackConfig(defaultPackConfig());
+  logGame("ADMIN", "pack odds tables reset");
   return cfg;
 }
 

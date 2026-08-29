@@ -44,11 +44,23 @@ function pct(w: RarityWeights, r: Rarity) {
   return ((100 * (Number(w[r]) || 0)) / total).toFixed(1);
 }
 
+function withLuckPreview(weights: RarityWeights, luck: number): RarityWeights {
+  const boost = 1 + Math.max(0, Number(luck) || 0) / 100;
+  const out = {} as RarityWeights;
+  for (const r of RARITIES) {
+    const n = Number(weights[r]) || 0;
+    const idx = RARITIES.indexOf(r);
+    out[r] = idx >= 2 ? n * boost : n;
+  }
+  return out;
+}
+
 function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te } = useI18n();
   const [cfg, setCfg] = useState<DropConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [luck, setLuck] = useState(0);
 
   const load = useCallback(async () => {
     const data = await api<DropConfig>("/admin/drops");
@@ -115,6 +127,17 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
   return (
     <div className="admin-drops">
       <p className="muted">{t("adminDropsHint")}</p>
+      <label className="admin-luck-preview">
+        {t("adminDropsLuck")}
+        <input
+          type="number"
+          min={0}
+          step="1"
+          value={luck}
+          onChange={(e) => setLuck(Math.max(0, Number(e.target.value) || 0))}
+        />
+        <span className="muted">{t("adminDropsLuckHint")}</span>
+      </label>
       {cfg.bands.map((band, i) => (
         <div key={`${band.minDepth}-${i}`} className="admin-drop-band">
           <div className="admin-drop-head">
@@ -156,7 +179,9 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
                         ? t("adminDropsKindElite")
                         : t("adminDropsKindBoss")}
                   </td>
-                  {RARITIES.map((r) => (
+                  {RARITIES.map((r) => {
+                    const shown = withLuckPreview(band.tables[kind], luck);
+                    return (
                     <td key={r}>
                       <input
                         type="number"
@@ -166,9 +191,10 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
                         aria-label={`${kind} ${r} ${t("adminDropsWeight")}`}
                         onChange={(e) => setWeight(i, kind, r, e.target.value)}
                       />
-                      <span className="admin-drop-pct">{t("adminDropsChance", { n: pct(band.tables[kind], r) })}</span>
+                      <span className="admin-drop-pct">{t("adminDropsChance", { n: pct(shown, r) })}</span>
                     </td>
-                  ))}
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -192,6 +218,139 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
                   },
                 },
               ],
+            });
+          }}
+        >
+          {t("adminDropsAddBand")}
+        </button>
+        <button className="gold" disabled={busy} onClick={() => void save()}>
+          {t("adminDropsSave")}
+        </button>
+        <button disabled={busy} onClick={() => void reset()}>
+          {t("adminDropsReset")}
+        </button>
+        {note ? <span className="muted">{note}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+type PackBand = { minDepth: number; two: number; three: number };
+type PackConfig = { bands: PackBand[] };
+
+function PacksPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t, te } = useI18n();
+  const [cfg, setCfg] = useState<PackConfig | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = useCallback(async () => {
+    const data = await api<PackConfig>("/admin/packs");
+    setCfg(data);
+  }, []);
+
+  useEffect(() => {
+    load().catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
+  }, [load, setErr, te]);
+
+  function patchBand(i: number, next: PackBand) {
+    if (!cfg) return;
+    const bands = cfg.bands.slice();
+    bands[i] = next;
+    setCfg({ bands });
+    setNote("");
+  }
+
+  async function save() {
+    if (!cfg || busy) return;
+    setBusy(true);
+    try {
+      const saved = await api<PackConfig>("/admin/packs", { method: "POST", body: cfg });
+      setCfg(saved);
+      setNote(t("adminPacksSaved"));
+      setErr("");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const saved = await api<PackConfig>("/admin/packs/reset", { method: "POST", body: {} });
+      setCfg(saved);
+      setNote(t("adminPacksSaved"));
+      setErr("");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!cfg) return <p className="muted">{t("adminPacksHint")}</p>;
+
+  return (
+    <div className="admin-drops">
+      <p className="muted">{t("adminPacksHint")}</p>
+      {cfg.bands.map((band, i) => (
+        <div key={`${band.minDepth}-${i}`} className="admin-drop-band">
+          <div className="admin-drop-head">
+            <label>
+              {t("adminDropsFromDepth")}
+              <input
+                type="number"
+                min={0}
+                value={band.minDepth}
+                onChange={(e) => patchBand(i, { ...band, minDepth: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
+              />
+            </label>
+            {cfg.bands.length > 1 ? (
+              <button
+                className="danger"
+                disabled={busy}
+                onClick={() => setCfg({ bands: cfg.bands.filter((_, j) => j !== i) })}
+              >
+                {t("adminDropsRemoveBand")}
+              </button>
+            ) : null}
+          </div>
+          <label>
+            {t("adminPacksTwo")}
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step="0.1"
+              value={band.two}
+              onChange={(e) => patchBand(i, { ...band, two: Math.max(0, Number(e.target.value) || 0) })}
+            />
+            <span className="muted">%</span>
+          </label>
+          <label>
+            {t("adminPacksThree")}
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step="0.1"
+              value={band.three}
+              onChange={(e) => patchBand(i, { ...band, three: Math.max(0, Number(e.target.value) || 0) })}
+            />
+            <span className="muted">%</span>
+          </label>
+        </div>
+      ))}
+      <div className="admin-drop-actions">
+        <button
+          disabled={busy}
+          onClick={() => {
+            const last = cfg.bands[cfg.bands.length - 1]!;
+            setCfg({
+              bands: [...cfg.bands, { minDepth: last.minDepth + 5, two: last.two, three: last.three }],
             });
           }}
         >
@@ -284,7 +443,7 @@ export function AdminView({
   setErr: (s: string) => void;
 }) {
   const { t, te } = useI18n();
-  const [tab, setTab] = useState<"wayfarers" | "guilds" | "drops" | "gate">("wayfarers");
+  const [tab, setTab] = useState<"wayfarers" | "guilds" | "drops" | "packs" | "gate">("wayfarers");
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [guilds, setGuilds] = useState<GuildRow[]>([]);
   const [amounts, setAmounts] = useState<Record<string, string>>({});
@@ -334,6 +493,9 @@ export function AdminView({
         <button className={tab === "drops" ? "gold" : ""} onClick={() => setTab("drops")}>
           {t("adminTabDrops")}
         </button>
+        <button className={tab === "packs" ? "gold" : ""} onClick={() => setTab("packs")}>
+          {t("adminTabPacks")}
+        </button>
         <button className={tab === "gate" ? "gold" : ""} onClick={() => setTab("gate")}>
           {t("adminTabGate")}
         </button>
@@ -343,6 +505,8 @@ export function AdminView({
         <GatePanel setErr={setErr} />
       ) : tab === "drops" ? (
         <DropsPanel setErr={setErr} />
+      ) : tab === "packs" ? (
+        <PacksPanel setErr={setErr} />
       ) : tab === "wayfarers" ? (
         <div className="admin-table-wrap">
           <table className="board-table admin-table">

@@ -140,7 +140,10 @@ api.post("/game/travel", requireAuth, (req, res) => {
 });
 
 api.post("/game/fight", requireAuth, (req, res) => {
-  res.status(400).json({ error: "Choose a path on the map." });
+  const r = game.startCombat(req.user!.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  const { error: _e, ...rest } = r;
+  res.json(rest);
 });
 
 api.post("/game/advance", requireAuth, (req, res) => {
@@ -515,6 +518,18 @@ api.post("/admin/drops", requireAuth, requireAdmin, (req, res) => {
 
 api.post("/admin/drops/reset", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminResetDropTables());
+});
+
+api.get("/admin/packs", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminPackTables());
+});
+
+api.post("/admin/packs", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSavePackTables(req.body));
+});
+
+api.post("/admin/packs/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetPackTables());
 });
 
 api.get("/admin/gate", requireAuth, requireAdmin, (_req, res) => {

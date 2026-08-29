@@ -86,12 +86,15 @@ type GameState = {
   region: { name: string; theme: string; description: string };
   grid: { cols: number; rows: number };
   storage: null | { items: Item[]; cols: number; rows: number; cells: number; level: number; upgradeCost: number };
+  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number }[] | null;
+  packOdds?: { two: number; three: number };
 };
 
 type Fight = {
   won: boolean;
   dead?: boolean;
-  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number };
+  awaiting?: boolean;
+  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number };
   enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number }[];
   log: { t: number; text: string; key?: string; vars?: Record<string, string | number> }[];
   gold?: number;
@@ -178,6 +181,25 @@ export default function App() {
   }, [reload]);
 
   useEffect(() => {
+    const foes = game?.pendingFight;
+    const ch = game?.character;
+    if (!foes?.length || !ch) return;
+    setFight({
+      awaiting: true,
+      won: false,
+      enemy: foes[0]!,
+      enemies: foes,
+      log: [],
+      playerHp: ch.hp,
+      startPlayerHp: ch.hp,
+      playerMaxHp: ch.power?.maxHp || ch.max_hp,
+    });
+    setLivePlayerHp(ch.hp);
+    setLiveFoes(foes.map((e) => ({ ...e, hp: e.maxHp })));
+    setPlaybackDone(true);
+  }, [game?.pendingFight, game?.character?.id]);
+
+  useEffect(() => {
     const tick = async () => {
       try {
         const st = await fetchStatus();
@@ -208,9 +230,11 @@ export default function App() {
   }, [logShown]);
 
   useEffect(() => {
-    if (!fight) {
-      setBattleFx(null);
-      setPlaybackDone(true);
+    if (!fight || fight.awaiting) {
+      if (!fight) {
+        setBattleFx(null);
+        setPlaybackDone(true);
+      }
       return;
     }
     let cancelled = false;
@@ -322,7 +346,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [fight?.log]);
+  }, [fight?.log, fight?.awaiting]);
 
   async function linkItem(item: Item) {
     try {
@@ -546,10 +570,43 @@ export default function App() {
   const inCity = c.location === "CITY";
   const stats = c.power.stats;
   const displayHp = Math.min(fight ? livePlayerHp : c.hp, fight?.playerMaxHp ?? maxHp);
-  const waitingReplay = !!(fight && !fight.dead && !playbackDone);
+  const xpNeed = 40 + c.level * 25;
+  const waitingReplay = !!(fight && !fight.dead && !fight.awaiting && !playbackDone);
   const lootOffers = waitingReplay ? [] : game.lootChoices || [];
-  const showBattle = !!(fight && !fight.dead && !playbackDone);
+  const awaiting = !!(fight?.awaiting && !fight.dead);
+  const showArena = !!(fight && !fight.dead && (awaiting || !playbackDone));
+  const showLastLog = !!(fight && !fight.dead && fight.log?.length);
   const march = game.march;
+  const roadShown = mobile === "fight" || (typeof window !== "undefined" && window.innerWidth > 1100);
+
+  async function startFight() {
+    try {
+      const startPlayerHp = c.hp;
+      const playerMaxHp = maxHp;
+      const r = await api<Fight>("/game/fight", { method: "POST" });
+      const packed: Fight = { ...r, awaiting: false, startPlayerHp, playerMaxHp };
+      setLivePlayerHp(startPlayerHp);
+      setLiveFoes(
+        (packed.enemies?.length
+          ? packed.enemies
+          : [
+              {
+                id: packed.enemy.id,
+                name: packed.enemy.name,
+                kind: packed.enemy.kind,
+                hp: packed.enemy.maxHp || packed.enemy.hp,
+                maxHp: packed.enemy.maxHp || packed.enemy.hp,
+                damage: packed.enemy.damage || 0,
+              },
+            ]
+        ).map((e) => ({ ...e, hp: e.maxHp }))
+      );
+      setFight(packed);
+      if (r.dead) setMode("play");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "The road refuses"));
+    }
+  }
 
   async function travelTo(nodeId: string) {
     try {
@@ -563,12 +620,19 @@ export default function App() {
         await reload();
         return;
       }
-      if (r.action === "loot" || !r.enemy) {
+      if (r.action === "loot" || (r.action !== "ambush" && r.action !== "fight" && !r.enemy)) {
         setFight(null);
         await reload();
         return;
       }
-      const packed: Fight = { ...r, startPlayerHp, playerMaxHp };
+      const packed: Fight = {
+        ...r,
+        awaiting: r.action === "ambush",
+        startPlayerHp,
+        playerMaxHp,
+        log: r.action === "ambush" ? [] : r.log,
+        won: r.action === "ambush" ? false : r.won,
+      };
       setLivePlayerHp(startPlayerHp);
       setLiveFoes(
         (packed.enemies?.length
@@ -586,6 +650,7 @@ export default function App() {
         ).map((e) => ({ ...e, hp: e.maxHp }))
       );
       setFight(packed);
+      await reload();
       if (r.dead) setMode("play");
     } catch (e) {
       setErr(te(e instanceof Error ? e.message : "The road refuses"));
@@ -710,11 +775,19 @@ export default function App() {
         <aside className="panel left-panel" style={{ display: mobile === "equip" || window.innerWidth > 1100 ? "block" : "none" }}>
               <div className="section-title">{t("characterLabel")}</div>
               <div className="hero-vitals">
-                <div className="hpbar hero wide">
-                  <span style={{ width: `${(displayHp / Math.max(1, maxHp)) * 100}%` }} />
-                  <em>
-                    {displayHp}/{maxHp}
-                  </em>
+                <div className="hero-bars">
+                  <div className="hpbar hero wide">
+                    <span style={{ width: `${(displayHp / Math.max(1, maxHp)) * 100}%` }} />
+                    <em>
+                      {displayHp}/{maxHp}
+                    </em>
+                  </div>
+                  <div className="xpbar" title={t("xpBar", { cur: c.xp, need: xpNeed })}>
+                    <span style={{ width: `${(c.xp / Math.max(1, xpNeed)) * 100}%` }} />
+                    <em>
+                      {c.xp}/{xpNeed}
+                    </em>
+                  </div>
                 </div>
                 <div className="armor-badge" title={t("stat_armor")}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c8c4bc" strokeWidth="1.6">
@@ -963,33 +1036,48 @@ export default function App() {
                 </button>
               </div>
             </div>
-          ) : showBattle ? (
-            <div className="panel battle-wrap" style={{ display: mobile === "fight" || window.innerWidth > 1100 ? "block" : "none" }}>
-              <BattleStage
-                playerName={c.name}
-                playerHp={livePlayerHp}
-                playerMax={fight?.playerMaxHp ?? maxHp}
-                foes={liveFoes}
-                inCity={false}
-                fx={battleFx}
-              />
-              <div className="log" ref={logBox} style={{ marginTop: 8 }}>
-                {(fight?.log || []).slice(0, logShown).map((l, i) => (
-                  <div key={i} className={l.key === "combat.crit" ? "crit" : l.key === "combat.falls" || l.key === "combat.fallen" ? "fall" : l.key === "combat.bleed" || l.key === "combat.poison" || l.key === "combat.burn" || l.key === "combat.freeze" || l.key === "combat.dot" || l.key === "combat.thorns" || l.key === "combat.barrier" ? "dot" : ""}>
-                    {combatLine(l)}
-                  </div>
-                ))}
-              </div>
-            </div>
           ) : (
-            <div className="panel battle-wrap" style={{ display: mobile === "fight" || window.innerWidth > 1100 ? "block" : "none" }}>
-              {march ? (
-                <MarchMap march={march} interactive={!inCity && !lootOffers.length} onPick={travelTo} />
+            <div className={`panel battle-wrap${showArena && !awaiting ? " live" : ""}`} style={{ display: roadShown ? "flex" : "none" }}>
+              {showArena ? (
+                <div className="arena-block">
+                  {awaiting ? (
+                    <div className="start-fight-overlay">
+                      <button className="gold start-fight-btn" onClick={() => void startFight()}>
+                        {t("startFight")}
+                      </button>
+                    </div>
+                  ) : null}
+                  <BattleStage
+                    playerName={c.name}
+                    playerHp={livePlayerHp}
+                    playerMax={fight?.playerMaxHp ?? maxHp}
+                    foes={liveFoes}
+                    inCity={false}
+                    fx={awaiting ? null : battleFx}
+                  />
+                </div>
+              ) : march ? (
+                <MarchMap
+                  march={march}
+                  packTwo={game.packOdds?.two ?? 10}
+                  packThree={game.packOdds?.three ?? 1}
+                  interactive={!inCity && !lootOffers.length && !awaiting}
+                  onPick={travelTo}
+                />
               ) : (
                 <p className="muted">{t("mapHint")}</p>
               )}
-              {fight && fight.won && playbackDone ? (
-                <p className="muted" style={{ textAlign: "center" }}>{t("spoils", { gold: fight.gold ?? 0, xp: fight.xpGain ?? 0 })}</p>
+              {fight && fight.won && playbackDone && !awaiting ? (
+                <p className="muted last-spoils">{t("spoils", { gold: fight.gold ?? 0, xp: fight.xpGain ?? 0 })}</p>
+              ) : null}
+              {showLastLog ? (
+                <div className="log" ref={logBox}>
+                  {(fight?.log || []).slice(0, playbackDone || awaiting ? fight!.log.length : logShown).map((l, i) => (
+                    <div key={i} className={l.key === "combat.crit" ? "crit" : l.key === "combat.falls" || l.key === "combat.fallen" ? "fall" : l.key === "combat.bleed" || l.key === "combat.poison" || l.key === "combat.burn" || l.key === "combat.freeze" || l.key === "combat.dot" || l.key === "combat.thorns" || l.key === "combat.barrier" ? "dot" : ""}>
+                      {combatLine(l)}
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
           )}
@@ -1030,7 +1118,9 @@ export default function App() {
           <div className="panel modal map-peek-panel" onClick={(e) => e.stopPropagation()}>
             <MarchMap
               march={march}
-              interactive={!inCity && !lootOffers.length && !showBattle}
+              interactive={!inCity && !lootOffers.length && !showArena}
+              packTwo={game.packOdds?.two ?? 10}
+              packThree={game.packOdds?.three ?? 1}
               onPick={travelTo}
             />
             <button onClick={() => setMapPeek(false)}>{t("closeMap")}</button>
@@ -1044,7 +1134,6 @@ export default function App() {
           charLevel={c.level}
           setErr={setErr}
           onDone={async () => {
-            setFight(null);
             await reload();
           }}
         />

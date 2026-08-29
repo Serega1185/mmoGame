@@ -304,7 +304,32 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
 .left-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
 .left-tabs button { flex: 1; padding: 0.35rem 0.4rem; font-size: 0.65rem; }
 .hero-vitals { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.hpbar.hero.wide { flex: 1; height: 18px; position: relative; background: #2a1810; border: 1px solid #6a3a22; }
+.hero-bars { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.hpbar.hero.wide { flex: none; height: 18px; width: 100%; position: relative; background: #2a1810; border: 1px solid #6a3a22; }
+.xpbar {
+  height: 10px;
+  position: relative;
+  background: #16120c;
+  border: 1px solid #4a3a22;
+}
+.xpbar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(#6a8ab8, #3a5a88);
+}
+.xpbar em {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.58rem;
+  font-style: normal;
+  color: #e8e4dc;
+  text-shadow: 0 1px 2px #000;
+  pointer-events: none;
+  letter-spacing: 0.04em;
+}
 .hpbar.hero.wide > span { background: linear-gradient(#c46828, #8a3a12); }
 .hpbar.hero em, .hpbar em {
   position: absolute;
@@ -688,7 +713,20 @@ main {
   overflow: hidden;
 }
 .city-map { overflow: auto; }
-.battle-wrap .log { overflow: auto; min-height: 0; flex: 1; }
+.battle-wrap .log { overflow: auto; min-height: 72px; flex: 0 1 160px; max-height: 180px; }
+.battle-wrap.live .log { flex: 1; max-height: none; min-height: 0; }
+.arena-block { position: relative; flex-shrink: 0; }
+.start-fight-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: rgba(12, 8, 4, 0.45);
+  pointer-events: none;
+}
+.start-fight-btn { pointer-events: auto; font-size: 1rem; padding: 0.7rem 1.4rem; }
+.last-spoils { text-align: center; margin: 4px 0 0; flex-shrink: 0; }
 .march-map {
   flex: 1;
   min-height: 0;
@@ -699,12 +737,27 @@ main {
 .march-pan {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  position: relative;
   cursor: grab;
   user-select: none;
   touch-action: none;
   border: 1px solid var(--bronze);
   background: #1c140e;
+}
+.pack-odds {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: #d8c4a0;
+  background: rgba(18, 12, 8, 0.82);
+  border: 1px solid #6a5438;
+  padding: 4px 8px;
+  pointer-events: auto;
+  cursor: help;
 }
 .march-pan.panning { cursor: grabbing; }
 .march-svg {
@@ -837,7 +890,7 @@ main {
 .forge-slot.pos-1 { left: 18%; top: 92px; }
 .forge-slot.pos-2 { right: 18%; top: 92px; }
 .admin-hall { padding: 16px; width: 100%; flex: 1; min-height: 0; overflow: auto; }
-.admin-tabs { max-width: 640px; margin: 12px 0; }
+.admin-tabs { max-width: 880px; margin: 12px 0; }
 .admin-drops { display: flex; flex-direction: column; gap: 16px; max-width: 980px; }
 .admin-drop-band {
   border: 1px solid #4a3420;
@@ -852,6 +905,14 @@ main {
   margin-bottom: 10px;
 }
 .admin-drop-head input[type="number"] { width: 72px; }
+.admin-luck-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.admin-luck-preview input { width: 72px; }
+.admin-drop-band label { display: inline-flex; gap: 8px; align-items: center; margin-right: 16px; }
 .admin-drop-table { width: 100%; font-size: 0.78rem; border-collapse: collapse; }
 .admin-drop-table th {
   color: var(--gold);

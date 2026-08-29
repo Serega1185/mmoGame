@@ -15,6 +15,7 @@ export type MarchState = {
   current: string | null;
   pending: string | null;
   visited: string[];
+  pendingFight?: { kind: "normal" | "elite" | "boss"; enemyIds: string[] } | null;
 };
 
 export type PublicMarch = {
@@ -124,6 +125,12 @@ export function parseMarch(raw: unknown): MarchState | null {
       current: s.current ?? null,
       pending: s.pending ?? null,
       visited: Array.isArray(s.visited) ? s.visited.map(String) : [],
+      pendingFight: s.pendingFight && Array.isArray(s.pendingFight.enemyIds)
+        ? {
+            kind: s.pendingFight.kind === "elite" || s.pendingFight.kind === "boss" ? s.pendingFight.kind : "normal",
+            enemyIds: s.pendingFight.enemyIds.map(String),
+          }
+        : null,
     };
   } catch {
     return null;

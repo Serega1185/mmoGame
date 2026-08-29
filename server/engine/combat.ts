@@ -191,11 +191,29 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       (def.stats.dodge || 0) + (def.talents.has("last_bastion") && def.hp / def.maxHp < 0.3 ? 20 : 0);
     if (Math.random() * 100 < dodge) {
       log.push(line(tick, "combat.dodges", { name: def.name, id: def.id || def.name }));
+      log.push(
+        line(tick, "combat.strike", {
+          att: att.name,
+          def: def.name,
+          attId: att.id || att.name,
+          defId: def.id || def.name,
+          dealt: 0,
+        })
+      );
       return 0;
     }
     if (def.barrier > 0) {
       def.barrier -= 1;
       log.push(line(tick, "combat.barrier", { name: def.name, id: def.id || def.name, left: def.barrier }));
+      log.push(
+        line(tick, "combat.strike", {
+          att: att.name,
+          def: def.name,
+          attId: att.id || att.name,
+          defId: def.id || def.name,
+          dealt: 0,
+        })
+      );
       return 0;
     }
     const hadArmor = def.armorPool > 0;
@@ -217,6 +235,15 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       );
     } else if (soak > 0) {
       log.push(line(tick, "combat.armor", { name: def.name, n: soak }));
+      log.push(
+        line(tick, "combat.strike", {
+          att: att.name,
+          def: def.name,
+          attId: att.id || att.name,
+          defId: def.id || def.name,
+          dealt: 0,
+        })
+      );
     }
     if (physical && def.thorns > 0 && att.hp > 0) {
       const th = def.thorns;

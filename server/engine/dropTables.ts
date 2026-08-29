@@ -102,3 +102,14 @@ export function chancePercents(weights: RarityWeights): Record<Rarity, number> {
   for (const r of RARITIES) out[r] = total > 0 ? (100 * (weights[r] || 0)) / total : 0;
   return out;
 }
+
+export function withLuck(weights: RarityWeights, luck: number): RarityWeights {
+  const boost = 1 + Math.max(0, Number(luck) || 0) / 100;
+  const out = {} as RarityWeights;
+  for (const r of RARITIES) {
+    const n = Number(weights[r]) || 0;
+    const idx = RARITIES.indexOf(r);
+    out[r] = idx >= 2 ? n * boost : n;
+  }
+  return out;
+}
