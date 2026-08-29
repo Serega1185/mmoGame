@@ -8,10 +8,8 @@ export function emptyGrid(cols = CONFIG.GRID_COLS, rows = CONFIG.GRID_ROWS): Gri
   return Array.from({ length: rows }, () => Array.from({ length: cols }, () => null));
 }
 
-export function dims(item: { width: number; height: number; rotated: number }) {
-  return item.rotated
-    ? { w: item.height, h: item.width }
-    : { w: item.width, h: item.height };
+export function dims(_item?: { width: number; height: number; rotated: number }) {
+  return { w: 1, h: 1 };
 }
 
 export function buildGrid(items: InstanceRow[], cols?: number, rows?: number): Grid {
@@ -53,13 +51,10 @@ export function findPlace(
   grid: Grid,
   item: { id: string; width: number; height: number; rotated: number }
 ): { x: number; y: number; rotated: number } | null {
-  const tryRot = [item.rotated, item.rotated ? 0 : 1];
-  for (const rotated of tryRot) {
-    const probe = { ...item, rotated };
-    for (let y = 0; y < grid.length; y++) {
-      for (let x = 0; x < (grid[0]?.length ?? 0); x++) {
-        if (canPlace(grid, probe, x, y)) return { x, y, rotated };
-      }
+  const probe = { ...item, width: 1, height: 1, rotated: 0 };
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < (grid[0]?.length ?? 0); x++) {
+      if (canPlace(grid, probe, x, y)) return { x, y, rotated: 0 };
     }
   }
   return null;
@@ -95,8 +90,64 @@ export function loadStorage(userId: string): InstanceRow[] {
 }
 
 export function occupyCount(items: InstanceRow[]) {
-  return items.reduce((n, it) => {
-    const { w, h } = dims(it);
-    return n + w * h;
-  }, 0);
+  return items.length;
+}
+
+export function flattenToOneCell() {
+  db.prepare("UPDATE item_instances SET width = 1, height = 1, rotated = 0").run();
+  db.prepare("UPDATE item_definitions SET width = 1, height = 1").run();
+}
+
+export function compactInventory(characterId: string) {
+  const items = loadInv(characterId);
+  const grid = emptyGrid();
+  for (const it of items) {
+    const spot = findPlace(grid, it);
+    if (!spot) {
+      db.prepare("UPDATE item_instances SET grid_x = NULL, grid_y = NULL WHERE id = ?").run(it.id);
+      continue;
+    }
+    db.prepare("UPDATE item_instances SET grid_x=?, grid_y=?, rotated=0, width=1, height=1 WHERE id=?").run(
+      spot.x,
+      spot.y,
+      it.id
+    );
+    grid[spot.y]![spot.x] = it.id;
+  }
+}
+
+export function fillMissingSlots(characterId: string) {
+  const items = loadInv(characterId);
+  const cols = CONFIG.GRID_COLS;
+  const rows = CONFIG.GRID_ROWS;
+  const oob = items.some(
+    (i) => i.grid_x != null && i.grid_y != null && (i.grid_x < 0 || i.grid_y < 0 || i.grid_x >= cols || i.grid_y >= rows)
+  );
+  if (oob) {
+    compactInventory(characterId);
+    return;
+  }
+  const placed = items.filter((i) => i.grid_x != null && i.grid_y != null);
+  const missing = items.filter((i) => i.grid_x == null || i.grid_y == null);
+  if (!missing.length) return;
+  const grid = buildGrid(placed);
+  for (const it of missing) {
+    const spot = findPlace(grid, it);
+    if (!spot) continue;
+    db.prepare("UPDATE item_instances SET grid_x=?, grid_y=?, rotated=0, width=1, height=1 WHERE id=?").run(
+      spot.x,
+      spot.y,
+      it.id
+    );
+    grid[spot.y]![spot.x] = it.id;
+  }
+}
+
+export function reflowInventories() {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT owner_character_id AS id FROM item_instances WHERE location = 'INVENTORY' AND destroyed_at IS NULL AND owner_character_id IS NOT NULL`
+    )
+    .all() as { id: string }[];
+  for (const r of rows) fillMissingSlots(r.id);
 }

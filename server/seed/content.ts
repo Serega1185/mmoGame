@@ -1,4 +1,5 @@
-import type { Stats } from "../engine/stats.ts";
+import { exclusiveDamage, padItemStats, sanitizeStats, type StatKey } from "../engine/stats.ts";
+import { TALENTS } from "../engine/talents.ts";
 
 export type SetDef = {
   id: string;
@@ -10,68 +11,70 @@ export type SetDef = {
   bonus_5: string;
 };
 
+const none = JSON.stringify({});
+
 export const SETS: SetDef[] = [
   {
     id: "oathbound",
     name: "Oathbound Ward",
     flavor: "Vows hammered into steel.",
-    bonus_2: JSON.stringify({ armor: 8, health: 20 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ armor: 16, health: 40 }),
-    bonus_4: JSON.stringify({ armor: 16, health: 40, damage: 8 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ armor: 16, health: 60, damage: 12, regen: 4 }),
   },
   {
     id: "redhowl",
     name: "Red Howl",
     flavor: "Blood answers blood.",
-    bonus_2: JSON.stringify({ damage: 8 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ damage: 14, critChance: 6 }),
-    bonus_4: JSON.stringify({ damage: 14, critChance: 10, bleed: 6 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ damage: 20, critChance: 10, bleed: 12, lifesteal: 6 }),
   },
   {
     id: "briarvigil",
     name: "Briar Vigil",
     flavor: "Thorns keep the road.",
-    bonus_2: JSON.stringify({ lootChance: 8 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ lootChance: 12, critChance: 6 }),
-    bonus_4: JSON.stringify({ lootChance: 12, critChance: 10, dodge: 6 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ lootChance: 18, critChance: 10, dodge: 10, goldFind: 10 }),
   },
   {
     id: "silentcowl",
     name: "Silent Cowl",
     flavor: "A breath, then a grave.",
-    bonus_2: JSON.stringify({ dodge: 6, critChance: 4 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ dodge: 10, critChance: 8, poison: 4 }),
-    bonus_4: JSON.stringify({ dodge: 10, critChance: 12, poison: 8 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ dodge: 14, critChance: 14, poison: 12, execute: 15 }),
   },
   {
     id: "emberreliquary",
     name: "Ember Reliquary",
     flavor: "Holy fire in a locked casket.",
-    bonus_2: JSON.stringify({ fire: 5, armor: 4 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ fire: 10, armor: 8, health: 20 }),
-    bonus_4: JSON.stringify({ fire: 14, armor: 12, health: 30 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ fire: 20, armor: 16, health: 50, lifesteal: 4 }),
   },
   {
     id: "gallowsbrand",
     name: "Gallows Brand",
     flavor: "Sentence first, steel second.",
-    bonus_2: JSON.stringify({ execute: 10 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ execute: 18, critDamage: 20 }),
-    bonus_4: JSON.stringify({ execute: 24, critDamage: 30, damage: 8 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ execute: 35, critDamage: 40, damage: 14, bleed: 8 }),
   },
   {
     id: "deepvein",
     name: "Deepvein Compact",
     flavor: "Ore remembers the miner.",
-    bonus_2: JSON.stringify({ mining: 10, goldFind: 6 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ mining: 16, goldFind: 12, armorPen: 6 }),
-    bonus_4: JSON.stringify({ mining: 16, goldFind: 16, armorPen: 10, damage: 6 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ mining: 25, goldFind: 22, armorPen: 14, damage: 12 }),
   },
   {
@@ -80,25 +83,25 @@ export const SETS: SetDef[] = [
     flavor: "Every blow is a prayer.",
     bonus_2: JSON.stringify({ armor: 6, damage: 4 }),
     bonus_3: JSON.stringify({ armor: 10, damage: 8, health: 15 }),
-    bonus_4: JSON.stringify({ armor: 14, damage: 12, health: 25 }),
-    bonus_5: JSON.stringify({ armor: 18, damage: 16, health: 40, fire: 6 }),
+    bonus_4: none,
+    bonus_5: none,
   },
   {
     id: "crimsonthirst",
     name: "Crimson Thirst",
     flavor: "The night drinks first.",
-    bonus_2: JSON.stringify({ lifesteal: 6 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ lifesteal: 10, damage: 6 }),
-    bonus_4: JSON.stringify({ lifesteal: 12, damage: 10, health: 20 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ lifesteal: 18, damage: 14, health: 35, regen: 3 }),
   },
   {
     id: "censerwoe",
     name: "Censer of Woe",
     flavor: "Mercy smells of vinegar and ash.",
-    bonus_2: JSON.stringify({ poison: 6, dodge: 4 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ poison: 12, dodge: 6, lootChance: 6 }),
-    bonus_4: JSON.stringify({ poison: 16, dodge: 8, lootChance: 10 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ poison: 22, dodge: 12, lootChance: 12, armor: 8 }),
   },
   {
@@ -107,25 +110,25 @@ export const SETS: SetDef[] = [
     flavor: "The dead pay in iron.",
     bonus_2: JSON.stringify({ undeadDamage: 12 }),
     bonus_3: JSON.stringify({ undeadDamage: 20, health: 20 }),
-    bonus_4: JSON.stringify({ undeadDamage: 28, health: 35, armor: 6 }),
-    bonus_5: JSON.stringify({ undeadDamage: 40, health: 50, armor: 10, lootChance: 10 }),
+    bonus_4: none,
+    bonus_5: none,
   },
   {
     id: "hearthless",
     name: "Hearthless March",
     flavor: "No roof. Only road.",
-    bonus_2: JSON.stringify({ goldFind: 8, health: 10 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ goldFind: 14, health: 20, dodge: 4 }),
-    bonus_4: JSON.stringify({ goldFind: 18, health: 30, dodge: 8 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ goldFind: 25, health: 45, dodge: 10, lootChance: 8 }),
   },
   {
     id: "ironorchard",
     name: "Iron Orchard",
     flavor: "Harvest is a kind of war.",
-    bonus_2: JSON.stringify({ bleed: 5, goldFind: 5 }),
+    bonus_2: none,
     bonus_3: JSON.stringify({ bleed: 10, goldFind: 8, damage: 5 }),
-    bonus_4: JSON.stringify({ bleed: 14, goldFind: 12, damage: 8 }),
+    bonus_4: none,
     bonus_5: JSON.stringify({ bleed: 20, goldFind: 16, damage: 12, critChance: 6 }),
   },
   {
@@ -134,8 +137,8 @@ export const SETS: SetDef[] = [
     flavor: "Everything has a price in the dark.",
     bonus_2: JSON.stringify({ goldFind: 10, lootChance: 4 }),
     bonus_3: JSON.stringify({ goldFind: 16, lootChance: 8, dodge: 5 }),
-    bonus_4: JSON.stringify({ goldFind: 20, lootChance: 12, dodge: 8 }),
-    bonus_5: JSON.stringify({ goldFind: 28, lootChance: 16, dodge: 10, critChance: 6 }),
+    bonus_4: none,
+    bonus_5: none,
   },
   {
     id: "stormfen",
@@ -143,8 +146,8 @@ export const SETS: SetDef[] = [
     flavor: "The marsh keeps secrets, and teeth.",
     bonus_2: JSON.stringify({ poison: 5, health: 15 }),
     bonus_3: JSON.stringify({ poison: 10, health: 25, regen: 2 }),
-    bonus_4: JSON.stringify({ poison: 14, health: 35, regen: 3, dodge: 5 }),
-    bonus_5: JSON.stringify({ poison: 20, health: 50, regen: 5, dodge: 8 }),
+    bonus_4: none,
+    bonus_5: none,
   },
 ];
 
@@ -160,7 +163,7 @@ export type ItemDefSeed = {
   height: number;
   stackable: number;
   max_stack: number;
-  base_stats: Stats;
+  base_stats: Record<string, number>;
   affix_pool: StatKeyPool;
   set_id: string | null;
   glyph: string;
@@ -171,37 +174,9 @@ export type ItemDefSeed = {
 
 type StatKeyPool = { key: keyof Stats; min: number; max: number }[];
 
-const aff = (pairs: [keyof Stats, number, number][]): StatKeyPool =>
-  pairs.map(([key, min, max]) => ({ key, min, max }));
-
-const WEP = aff([
-  ["damage", 2, 8],
-  ["critChance", 1, 6],
-  ["critDamage", 5, 25],
-  ["armorPen", 2, 10],
-  ["lifesteal", 1, 6],
-  ["bleed", 1, 8],
-  ["poison", 1, 8],
-  ["fire", 1, 8],
-  ["attackSpeed", 2, 8],
-  ["execute", 3, 12],
-]);
-const ARM = aff([
-  ["armor", 2, 10],
-  ["health", 8, 30],
-  ["dodge", 1, 6],
-  ["regen", 1, 4],
-  ["goldFind", 2, 8],
-  ["lootChance", 2, 8],
-]);
-const JWL = aff([
-  ["critChance", 2, 8],
-  ["lifesteal", 2, 8],
-  ["goldFind", 3, 12],
-  ["lootChance", 3, 10],
-  ["dodge", 2, 7],
-  ["health", 6, 20],
-]);
+const WEP: StatKeyPool = [];
+const ARM: StatKeyPool = [];
+const JWL: StatKeyPool = [];
 
 export const ITEM_DEFS: ItemDefSeed[] = [];
 
@@ -239,9 +214,9 @@ const weapons: Omit<ItemDefSeed, "affix_pool" | "stackable" | "max_stack" | "sel
   { id: "ancient_war_axe", name: "Barrow War Axe", category: "weapon", slot: "Weapon", rarity_min: "Mythic", base_level: 60, required_level: 50, width: 2, height: 3, base_stats: { damage: 64, bleed: 16, execute: 20 }, set_id: "gallowsbrand", glyph: "axe", flavor: "Pulled from a king's last argument.", tags: ["axe"] },
   { id: "chain_hook", name: "Chain Hook", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 9, required_level: 7, width: 2, height: 2, base_stats: { damage: 14, armorPen: 6 }, set_id: "nightmarket", glyph: "hook", flavor: "For barrels, doors, and fleeing debtors.", tags: ["tool"] },
   { id: "torch_iron", name: "Caged Torch", category: "weapon", slot: "Offhand", rarity_min: "Common", base_level: 2, required_level: 1, width: 1, height: 2, base_stats: { fire: 4, lootChance: 3 }, set_id: null, glyph: "torch", flavor: "Light is a weapon in cellars.", tags: ["tool"] },
-  { id: "wood_buckler", name: "Oak Buckler", category: "armor", slot: "Offhand", rarity_min: "Common", base_level: 1, required_level: 1, width: 2, height: 2, base_stats: { armor: 6 }, set_id: "hearthless", glyph: "shield", flavor: "A door-lid with ambition.", tags: ["shield"] },
-  { id: "iron_kite", name: "Kite of the March", category: "armor", slot: "Offhand", rarity_min: "Uncommon", base_level: 10, required_level: 8, width: 2, height: 3, base_stats: { armor: 14, health: 15 }, set_id: "oathbound", glyph: "shield", flavor: "Painted with a road, not a saint.", tags: ["shield"] },
-  { id: "great_pavise", name: "Siege Pavise", category: "armor", slot: "Offhand", rarity_min: "Epic", base_level: 28, required_level: 24, width: 3, height: 3, base_stats: { armor: 28, health: 40, dodge: -2 }, set_id: "oathbound", glyph: "shield", flavor: "A wall you can lift, barely.", tags: ["shield"] },
+  { id: "wood_buckler", name: "Oak Buckler", category: "armor", slot: "Offhand", rarity_min: "Common", base_level: 1, required_level: 1, width: 2, height: 2, base_stats: { armor: 6, thorns: 4 }, set_id: "hearthless", glyph: "shield", flavor: "A door-lid with ambition.", tags: ["shield"] },
+  { id: "iron_kite", name: "Kite of the March", category: "armor", slot: "Offhand", rarity_min: "Uncommon", base_level: 10, required_level: 8, width: 2, height: 3, base_stats: { armor: 14, health: 15, barrier: 1 }, set_id: "oathbound", glyph: "shield", flavor: "Painted with a road, not a saint.", tags: ["shield"] },
+  { id: "great_pavise", name: "Siege Pavise", category: "armor", slot: "Offhand", rarity_min: "Epic", base_level: 28, required_level: 24, width: 3, height: 3, base_stats: { armor: 28, health: 40, barrier: 2, dodge: -2 }, set_id: "oathbound", glyph: "shield", flavor: "A wall you can lift, barely.", tags: ["shield"] },
 ];
 
 for (const w of weapons) {
@@ -288,12 +263,12 @@ const jewels: typeof weapons = [
   { id: "copper_ring", name: "Copper Ring", category: "jewelry", slot: "Ring1", rarity_min: "Common", base_level: 1, required_level: 1, width: 1, height: 1, base_stats: { goldFind: 4 }, set_id: "nightmarket", glyph: "ring", flavor: "Green at the edges.", tags: ["ring"] },
   { id: "iron_signet", name: "Iron Signet", category: "jewelry", slot: "Ring1", rarity_min: "Uncommon", base_level: 8, required_level: 6, width: 1, height: 1, base_stats: { armor: 3, damage: 2 }, set_id: "oathbound", glyph: "ring", flavor: "A seal of a forgotten house.", tags: ["ring"] },
   { id: "poison_band", name: "Venom Band", category: "jewelry", slot: "Ring1", rarity_min: "Rare", base_level: 14, required_level: 10, width: 1, height: 1, base_stats: { poison: 6, critChance: 4 }, set_id: "silentcowl", glyph: "ring", flavor: "Never lick it.", tags: ["ring"] },
-  { id: "gold_tooth", name: "Pawned Tooth", category: "jewelry", slot: "Ring2", rarity_min: "Uncommon", base_level: 6, required_level: 4, width: 1, height: 1, base_stats: { goldFind: 8 }, set_id: "nightmarket", glyph: "ring", flavor: "Someone smiled for the last time.", tags: ["ring"] },
+  { id: "gold_tooth", name: "Pawned Tooth", category: "jewelry", slot: "Ring2", rarity_min: "Uncommon", base_level: 6, required_level: 4, width: 1, height: 1, base_stats: { goldFind: 8 }, set_id: null, glyph: "ring", flavor: "Someone smiled for the last time.", tags: ["ring"] },
   { id: "ember_seal", name: "Ember Seal", category: "jewelry", slot: "Ring2", rarity_min: "Rare", base_level: 18, required_level: 14, width: 1, height: 1, base_stats: { fire: 6, health: 10 }, set_id: "emberreliquary", glyph: "ring", flavor: "Wax that never cools.", tags: ["ring"] },
-  { id: "grave_charm", name: "Barrow Charm", category: "jewelry", slot: "Accessory", rarity_min: "Rare", base_level: 12, required_level: 10, width: 1, height: 1, base_stats: { undeadDamage: 12, lootChance: 6 }, set_id: "gravetithe", glyph: "charm", flavor: "A fingerbone on a string.", tags: ["acc"] },
-  { id: "market_purse", name: "Night Purse", category: "jewelry", slot: "Accessory", rarity_min: "Uncommon", base_level: 8, required_level: 6, width: 2, height: 1, base_stats: { goldFind: 12, lootChance: 4 }, set_id: "nightmarket", glyph: "bag", flavor: "Has more pockets than honesty.", tags: ["acc"] },
-  { id: "censer_vial", name: "Vial of Woe", category: "jewelry", slot: "Accessory", rarity_min: "Epic", base_level: 22, required_level: 18, width: 1, height: 2, base_stats: { poison: 8, dodge: 4 }, set_id: "censerwoe", glyph: "vial", flavor: "Do not uncork indoors.", tags: ["acc"] },
-  { id: "anvil_token", name: "Anvil Token", category: "jewelry", slot: "Accessory", rarity_min: "Uncommon", base_level: 10, required_level: 8, width: 1, height: 1, base_stats: { armor: 4, fire: 3 }, set_id: "anvilcovenant", glyph: "charm", flavor: "A chip of the first anvil.", tags: ["acc"] },
+  { id: "grave_charm", name: "Barrow Charm", category: "jewelry", slot: "Neck", rarity_min: "Rare", base_level: 12, required_level: 10, width: 1, height: 1, base_stats: { undeadDamage: 12, lootChance: 6 }, set_id: null, glyph: "charm", flavor: "A fingerbone on a string.", tags: ["neck"] },
+  { id: "market_purse", name: "Night Purse", category: "jewelry", slot: "Ring1", rarity_min: "Uncommon", base_level: 8, required_level: 6, width: 1, height: 1, base_stats: { goldFind: 12, lootChance: 4 }, set_id: "nightmarket", glyph: "bag", flavor: "Has more pockets than honesty.", tags: ["ring"] },
+  { id: "censer_vial", name: "Vial of Woe", category: "jewelry", slot: "Neck", rarity_min: "Epic", base_level: 22, required_level: 18, width: 1, height: 1, base_stats: { poison: 8, dodge: 4 }, set_id: "censerwoe", glyph: "vial", flavor: "Do not uncork indoors.", tags: ["neck"] },
+  { id: "anvil_token", name: "Anvil Token", category: "jewelry", slot: "Ring1", rarity_min: "Uncommon", base_level: 10, required_level: 8, width: 1, height: 1, base_stats: { armor: 4, fire: 3 }, set_id: null, glyph: "charm", flavor: "A chip of the first anvil.", tags: ["ring"] },
 ];
 
 for (const j of jewels) {
@@ -305,7 +280,7 @@ const moreWeapons: typeof weapons = [
   { id: "bandit_falchion", name: "Toll Falchion", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 11, required_level: 8, width: 1, height: 3, base_stats: { damage: 17, goldFind: 6 }, set_id: "nightmarket", glyph: "sword", flavor: "Collects more than coins.", tags: ["sword"] },
   { id: "orc_cleaver", name: "Camp Cleaver", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 19, required_level: 15, width: 2, height: 2, base_stats: { damage: 25, bleed: 8 }, set_id: "redhowl", glyph: "axe", flavor: "Kitchen steel gone feral.", tags: ["axe"] },
   { id: "bone_spear", name: "Rib Spear", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 13, required_level: 10, width: 1, height: 4, base_stats: { damage: 16, undeadDamage: 8 }, set_id: "gravetithe", glyph: "spear", flavor: "The dead arming the living.", tags: ["spear"] },
-  { id: "witch_rod", name: "Hag Rod", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 17, required_level: 14, width: 1, height: 3, base_stats: { damage: 14, poison: 10, fire: 4 }, set_id: "stormfen", glyph: "staff", flavor: "Knotted with drowned hair.", tags: ["staff"] },
+  { id: "witch_rod", name: "Hag Rod", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 17, required_level: 14, width: 1, height: 3, base_stats: { magicDamage: 18, dodge: 4 }, set_id: "stormfen", glyph: "staff", flavor: "Knotted with drowned hair.", tags: ["staff", "magic", "frost"] },
   { id: "cult_dagger", name: "Choir Knife", category: "weapon", slot: "Weapon", rarity_min: "Epic", base_level: 25, required_level: 20, width: 1, height: 2, base_stats: { damage: 18, fire: 8, critChance: 8 }, set_id: "emberreliquary", glyph: "knife", flavor: "Sang when it cut.", tags: ["dagger"] },
   { id: "fort_pike", name: "Fortress Pike", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 22, required_level: 18, width: 1, height: 4, base_stats: { damage: 29, armor: 5 }, set_id: "oathbound", glyph: "spear", flavor: "Made to deny gates.", tags: ["spear"] },
   { id: "mountain_maul", name: "Ridge Maul", category: "weapon", slot: "Weapon", rarity_min: "Epic", base_level: 30, required_level: 26, width: 2, height: 3, base_stats: { damage: 38, armorPen: 10 }, set_id: "anvilcovenant", glyph: "hammer", flavor: "A boulder with a handle.", tags: ["hammer"] },
@@ -332,23 +307,13 @@ const moreArmor: typeof weapons = [
 
 for (const a of moreArmor) add({ ...a, affix_pool: ARM, stackable: 0, max_stack: 1, sell_mult: 1 });
 
-const consumables: ItemDefSeed[] = [
-  { id: "potion_small", name: "Clay Tonic", category: "consumable", slot: null, rarity_min: "Common", base_level: 1, required_level: 1, width: 1, height: 1, stackable: 1, max_stack: 10, base_stats: { health: 25 }, affix_pool: [], set_id: null, glyph: "potion", flavor: "Bitter as a sermon.", tags: ["potion"], sell_mult: 0.6 },
-  { id: "potion_mid", name: "Monk's Draught", category: "consumable", slot: null, rarity_min: "Uncommon", base_level: 10, required_level: 1, width: 1, height: 1, stackable: 1, max_stack: 8, base_stats: { health: 60 }, affix_pool: [], set_id: null, glyph: "potion", flavor: "Blessed, allegedly.", tags: ["potion"], sell_mult: 0.6 },
-  { id: "torch_pack", name: "Torch Bundle", category: "consumable", slot: null, rarity_min: "Common", base_level: 1, required_level: 1, width: 1, height: 2, stackable: 1, max_stack: 5, base_stats: { lootChance: 2 }, affix_pool: [], set_id: null, glyph: "torch", flavor: "Pitch and rags.", tags: ["tool"], sell_mult: 0.5 },
-  { id: "oil_vial", name: "Lamp Oil", category: "consumable", slot: null, rarity_min: "Common", base_level: 3, required_level: 1, width: 1, height: 1, stackable: 1, max_stack: 8, base_stats: { fire: 2 }, affix_pool: [], set_id: null, glyph: "vial", flavor: "Slippery hope.", tags: ["tool"], sell_mult: 0.5 },
-  { id: "whetstone", name: "Whetstone", category: "consumable", slot: null, rarity_min: "Uncommon", base_level: 5, required_level: 1, width: 1, height: 1, stackable: 1, max_stack: 5, base_stats: { damage: 3 }, affix_pool: [], set_id: null, glyph: "stone", flavor: "Sings against steel.", tags: ["tool"], sell_mult: 0.7 },
-];
-
-for (const c of consumables) add(c);
-
 const extraFill: typeof weapons = [
   { id: "rust_mace", name: "Rusted Flail", category: "weapon", slot: "Weapon", rarity_min: "Common", base_level: 6, required_level: 4, width: 2, height: 2, base_stats: { damage: 12, bleed: 3 }, set_id: null, glyph: "mace", flavor: "Tetanus with a chain.", tags: ["mace"] },
   { id: "hunter_knife", name: "Skinner", category: "weapon", slot: "Weapon", rarity_min: "Common", base_level: 3, required_level: 2, width: 1, height: 2, base_stats: { damage: 8, lootChance: 5 }, set_id: "briarvigil", glyph: "knife", flavor: "Knows hide from meat.", tags: ["dagger"] },
   { id: "sledge", name: "Quarry Sledge", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 14, required_level: 10, width: 2, height: 3, base_stats: { damage: 22, mining: 8 }, set_id: "deepvein", glyph: "hammer", flavor: "For rock that argues.", tags: ["hammer"] },
   { id: "scythe", name: "Tithe Scythe", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 21, required_level: 16, width: 2, height: 3, base_stats: { damage: 24, bleed: 10, execute: 8 }, set_id: "ironorchard", glyph: "sickle", flavor: "The church's other collector.", tags: ["tool"] },
   { id: "bone_shield", name: "Rib Pavise", category: "armor", slot: "Offhand", rarity_min: "Rare", base_level: 16, required_level: 12, width: 2, height: 3, base_stats: { armor: 12, undeadDamage: 6 }, set_id: "gravetithe", glyph: "shield", flavor: "The dead still useful.", tags: ["shield"] },
-  { id: "thorn_bracers", name: "Briar Bracers", category: "armor", slot: "Gloves", rarity_min: "Uncommon", base_level: 9, required_level: 6, width: 2, height: 1, base_stats: { armor: 3, bleed: 3, critChance: 3 }, set_id: "briarvigil", glyph: "gloves", flavor: "They bite back.", tags: ["leather"] },
+  { id: "thorn_bracers", name: "Briar Bracers", category: "armor", slot: "Gloves", rarity_min: "Uncommon", base_level: 9, required_level: 6, width: 2, height: 1, base_stats: { armor: 3, thorns: 6, bleed: 3, critChance: 3 }, set_id: "briarvigil", glyph: "gloves", flavor: "They bite back.", tags: ["leather"] },
   { id: "cult_robes", name: "Ash Vestments", category: "armor", slot: "Chest", rarity_min: "Epic", base_level: 27, required_level: 22, width: 2, height: 3, base_stats: { armor: 10, fire: 10, health: 20 }, set_id: "emberreliquary", glyph: "cloak", flavor: "Embers in the hem.", tags: ["cloth"] },
   { id: "dark_greaves", name: "Night Greaves", category: "armor", slot: "Legs", rarity_min: "Epic", base_level: 25, required_level: 20, width: 2, height: 3, base_stats: { armor: 12, dodge: 8, poison: 4 }, set_id: "silentcowl", glyph: "legs", flavor: "Soft iron, quieter steps.", tags: ["leather"] },
   { id: "king_ring", name: "Hollow Crown Ring", category: "jewelry", slot: "Ring1", rarity_min: "Legendary", base_level: 36, required_level: 30, width: 1, height: 1, base_stats: { damage: 8, goldFind: 10, health: 20 }, set_id: "gallowsbrand", glyph: "ring", flavor: "A kingdom reduced to jewelry.", tags: ["ring"] },
@@ -360,28 +325,65 @@ for (const e of extraFill) {
   add({ ...e, affix_pool: pool, stackable: 0, max_stack: 1, sell_mult: 1 });
 }
 
-export const SKILLS = [
-  { id: "iron_sinew", name: "Iron Sinew", description: "+12 Damage", stats: { damage: 12 } },
-  { id: "thick_hide", name: "Thick Hide", description: "+14 Armor", stats: { armor: 14 } },
-  { id: "keen_eye", name: "Keen Eye", description: "+8% Critical Chance", stats: { critChance: 8 } },
-  { id: "ox_heart", name: "Ox Heart", description: "+40 Health", stats: { health: 40 } },
-  { id: "leech_kiss", name: "Leech Kiss", description: "+6% Lifesteal", stats: { lifesteal: 6 } },
-  { id: "crow_luck", name: "Crow Luck", description: "+12% Loot Chance", stats: { lootChance: 12 } },
-  { id: "taxman", name: "Taxman's Smile", description: "+14% Gold Find", stats: { goldFind: 14 } },
-  { id: "open_vein", name: "Open Vein", description: "+8 Bleed Damage", stats: { bleed: 8 } },
-  { id: "green_rot", name: "Green Rot", description: "+8 Poison Damage", stats: { poison: 8 } },
-  { id: "cinder_blood", name: "Cinder Blood", description: "+8 Fire Damage", stats: { fire: 8 } },
-  { id: "reed_step", name: "Reed Step", description: "+8% Dodge", stats: { dodge: 8 } },
-  { id: "quick_hands", name: "Quick Hands", description: "+10% Attack Speed", stats: { attackSpeed: 10 } },
-  { id: "spike_blow", name: "Spike Blow", description: "+10% Armor Penetration", stats: { armorPen: 10 } },
-  { id: "second_wind", name: "Second Wind", description: "+3 Health Regeneration", stats: { regen: 3 } },
-  { id: "grave_hate", name: "Grave Hate", description: "+18% Damage vs Undead", stats: { undeadDamage: 18 } },
-  { id: "last_cut", name: "Last Cut", description: "+12% Execute Damage", stats: { execute: 12 } },
-  { id: "deep_pockets", name: "Deep Pockets", description: "+10% Gold Find, +6% Loot", stats: { goldFind: 10, lootChance: 6 } },
-  { id: "brutal", name: "Brutal Arc", description: "+25% Critical Damage", stats: { critDamage: 25 } },
-  { id: "vein_sense", name: "Vein Sense", description: "+12% Mining Bonus", stats: { mining: 12 } },
-  { id: "iron_lungs", name: "Iron Lungs", description: "+25 Health, +5 Armor", stats: { health: 25, armor: 5 } },
+const magicArms: typeof weapons = [
+  { id: "ash_wand", name: "Ash Wand", category: "weapon", slot: "Weapon", rarity_min: "Common", base_level: 1, required_level: 1, width: 1, height: 2, base_stats: { magicDamage: 8, critChance: 4 }, set_id: null, glyph: "wand", flavor: "A twig that learned to bite.", tags: ["wand", "magic", "fire"] },
+  { id: "peat_staff", name: "Peat Staff", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 6, required_level: 4, width: 1, height: 4, base_stats: { magicDamage: 12, luck: 4 }, set_id: "hearthless", glyph: "staff", flavor: "Lightning hops the fen.", tags: ["staff", "magic", "chain"] },
+  { id: "ember_wand", name: "Cinder Wand", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 16, required_level: 12, width: 1, height: 2, base_stats: { magicDamage: 20, lifesteal: 4 }, set_id: "emberreliquary", glyph: "wand", flavor: "A saint's spark on a stick.", tags: ["wand", "magic", "fire"] },
+  { id: "storm_staff", name: "Stormfen Crook", category: "weapon", slot: "Weapon", rarity_min: "Rare", base_level: 18, required_level: 14, width: 1, height: 4, base_stats: { magicDamage: 22, poison: 6, poisonChance: 25 }, set_id: "stormfen", glyph: "staff", flavor: "The marsh leaps from foe to foe.", tags: ["staff", "magic", "chain"] },
+  { id: "rime_wand", name: "Rime Wand", category: "weapon", slot: "Weapon", rarity_min: "Uncommon", base_level: 10, required_level: 8, width: 1, height: 2, base_stats: { magicDamage: 14, dodge: 4 }, set_id: "silentcowl", glyph: "wand", flavor: "Cold enough to stop a heart's beat.", tags: ["wand", "magic", "frost"] },
+  { id: "cinder_staff", name: "Reliquary Staff", category: "weapon", slot: "Weapon", rarity_min: "Epic", base_level: 28, required_level: 22, width: 1, height: 4, base_stats: { magicDamage: 32, critDamage: 20 }, set_id: "emberreliquary", glyph: "staff", flavor: "Choir-fire, long-handled.", tags: ["staff", "magic", "fire"] },
+  { id: "glacier_staff", name: "Barrow Crook", category: "weapon", slot: "Weapon", rarity_min: "Legendary", base_level: 36, required_level: 30, width: 1, height: 4, base_stats: { magicDamage: 40, health: 20 }, set_id: "gravetithe", glyph: "staff", flavor: "Winter that outlived its king.", tags: ["staff", "magic", "frost"] },
 ];
+for (const w of magicArms) add({ ...w, affix_pool: [], stackable: 0, max_stack: 1, sell_mult: 1 });
+
+for (const d of ITEM_DEFS) {
+  const magic = d.tags.includes("magic");
+  let stats = exclusiveDamage(sanitizeStats(d.base_stats as Record<string, number>), magic);
+  if (d.slot) {
+    const pad: [StatKey, number][] = magic
+      ? [
+          ["magicDamage", 8],
+          ["critChance", 4],
+          ["critDamage", 15],
+          ["lifesteal", 3],
+          ["luck", 4],
+        ]
+      : d.category === "weapon"
+        ? [
+            ["damage", 8],
+            ["critChance", 4],
+            ["critDamage", 15],
+            ["lifesteal", 3],
+            ["luck", 4],
+          ]
+        : d.category === "jewelry"
+          ? [
+              ["luck", 5],
+              ["health", 8],
+              ["critChance", 4],
+              ["lifesteal", 3],
+              ["dodge", 3],
+            ]
+          : [
+              ["armor", 6],
+              ["health", 12],
+              ["dodge", 3],
+              ["regen", 1],
+              ["luck", 3],
+            ];
+    stats = padItemStats(stats, pad);
+  }
+  d.base_stats = stats;
+  d.affix_pool = [];
+}
+for (const s of SETS) {
+  s.bonus_2 = JSON.stringify(sanitizeStats(JSON.parse(s.bonus_2)));
+  s.bonus_3 = JSON.stringify(sanitizeStats(JSON.parse(s.bonus_3)));
+  s.bonus_4 = JSON.stringify(sanitizeStats(JSON.parse(s.bonus_4)));
+  s.bonus_5 = JSON.stringify(sanitizeStats(JSON.parse(s.bonus_5)));
+}
+
+export const SKILLS = TALENTS;
 
 export const REGIONS = [
   { id: 1, slug: "mudgate", name: "Mudgate Hamlet", theme: "A soaked village of tax-weary folk and hungry dogs.", description: "Thatched roofs, open sewers, and knives behind smiles.", min_level: 1 },

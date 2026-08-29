@@ -3,13 +3,26 @@ import { db, now } from "../db.ts";
 import { hashPassword, checkPassword, setAuthCookie, requireAuth, requireAdmin, newId } from "../auth.ts";
 import { CONFIG } from "../config.ts";
 import * as game from "../game.ts";
-import { addCoins } from "../engine/economy.ts";
 import { hydrate, type InstanceRow } from "../engine/items.ts";
 import { expireAuctions } from "../game.ts";
 import { loadStorage, storageGridSize } from "../engine/inventory.ts";
 import { broadcast } from "../wsHub.ts";
+import { loadGate, publicStatus } from "../engine/gate.ts";
 
 export const api = express.Router();
+
+api.get("/status", (_req, res) => {
+  res.json(publicStatus());
+});
+
+api.use((req, res, next) => {
+  if (!loadGate().maintenance) return next();
+  if (req.user?.role === "admin") return next();
+  if (req.path === "/status" || req.path === "/config" || req.path.startsWith("/auth/")) return next();
+  if (req.method === "GET" && req.path === "/me") return next();
+  const g = loadGate();
+  return res.status(503).json({ error: "The road is closed.", maintenance: true, message: g.message });
+});
 
 api.post("/auth/register", (req, res) => {
   const { email, password, username } = req.body || {};
@@ -119,10 +132,15 @@ api.get("/game", requireAuth, (req, res) => {
   res.json({ user, ...snap, storage });
 });
 
-api.post("/game/fight", requireAuth, (req, res) => {
-  const r = game.startCombat(req.user!.id);
+api.post("/game/travel", requireAuth, (req, res) => {
+  const r = game.travel(req.user!.id, String(req.body?.nodeId || ""));
   if (r.error) return res.status(400).json({ error: r.error });
-  res.json(r.result);
+  const { error: _e, ...rest } = r;
+  res.json(rest);
+});
+
+api.post("/game/fight", requireAuth, (req, res) => {
+  res.status(400).json({ error: "Choose a path on the map." });
 });
 
 api.post("/game/advance", requireAuth, (req, res) => {
@@ -137,10 +155,28 @@ api.post("/game/leave-city", requireAuth, (req, res) => {
   res.json(r);
 });
 
-api.post("/game/skill", requireAuth, (req, res) => {
-  const r = game.pickSkill(req.user!.id, String(req.body?.skillId || ""));
+api.post("/game/loot", requireAuth, (req, res) => {
+  const id = req.body?.instanceId;
+  const r = game.pickLoot(req.user!.id, id == null || id === "" ? null : String(id));
   if (r.error) return res.status(400).json({ error: r.error });
   res.json({ ok: true });
+});
+
+api.post("/game/talent", requireAuth, (req, res) => {
+  const r = game.pickTalent(req.user!.id, String(req.body?.talentId || req.body?.skillId || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true });
+});
+
+api.get("/forge/costs", requireAuth, (_req, res) => {
+  res.json({ costs: CONFIG.FORGE_COST });
+});
+
+api.post("/forge", requireAuth, (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const r = game.forgeItems(req.user!.id, ids);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
 });
 
 api.post("/items/move", requireAuth, (req, res) => {
@@ -419,6 +455,22 @@ api.get("/admin/users", requireAuth, requireAdmin, (_req, res) => {
   });
 });
 
+api.get("/admin/ledger", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminLedger());
+});
+
+api.post("/admin/character/delete", requireAuth, requireAdmin, (req, res) => {
+  const out = game.adminEraseCharacter(String(req.body?.characterId || ""));
+  if (out.error) return res.status(400).json({ error: out.error });
+  res.json({ ok: true });
+});
+
+api.post("/admin/guild/delete", requireAuth, requireAdmin, (req, res) => {
+  const out = game.adminDisbandGuild(String(req.body?.guildId || ""));
+  if (out.error) return res.status(400).json({ error: out.error });
+  res.json({ ok: true });
+});
+
 api.post("/admin/ban", requireAuth, requireAdmin, (req, res) => {
   db.prepare("UPDATE users SET banned_until=?, ban_reason=? WHERE id=?").run(
     now() + Number(req.body?.hours || 24) * 3600_000,
@@ -434,8 +486,9 @@ api.post("/admin/mute", requireAuth, requireAdmin, (req, res) => {
 });
 
 api.post("/admin/coins", requireAuth, requireAdmin, (req, res) => {
-  addCoins(String(req.body?.userId), Number(req.body?.amount || 0), "ADMIN", "grant");
-  res.json({ ok: true });
+  const out = game.adminAdjustCoins(String(req.body?.userId || ""), Number(req.body?.amount || 0));
+  if (out.error) return res.status(400).json({ error: out.error });
+  res.json({ ok: true, coins: out.coins });
 });
 
 api.post("/admin/auction/cancel", requireAuth, requireAdmin, (req, res) => {
@@ -450,6 +503,26 @@ api.get("/admin/defs", requireAuth, requireAdmin, (_req, res) => {
     enemies: db.prepare("SELECT id,name,kind,region,hp,damage FROM enemies ORDER BY region").all(),
     regions: db.prepare("SELECT * FROM regions").all(),
   });
+});
+
+api.get("/admin/drops", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminDropTables());
+});
+
+api.post("/admin/drops", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveDropTables(req.body));
+});
+
+api.post("/admin/drops/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetDropTables());
+});
+
+api.get("/admin/gate", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminGate());
+});
+
+api.post("/admin/gate", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveGate(req.body));
 });
 
 api.post("/admin/enemy", requireAuth, requireAdmin, (req, res) => {

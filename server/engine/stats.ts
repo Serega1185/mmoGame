@@ -11,12 +11,21 @@ export const RARITY_WEIGHTS: Record<Rarity, number> = {
 };
 
 export const RARITY_AFFIXES: Record<Rarity, [number, number]> = {
-  Common: [1, 2],
-  Uncommon: [2, 3],
-  Rare: [3, 4],
-  Epic: [4, 5],
-  Legendary: [5, 6],
-  Mythic: [6, 7],
+  Common: [1, 1],
+  Uncommon: [2, 2],
+  Rare: [3, 3],
+  Epic: [4, 4],
+  Legendary: [5, 5],
+  Mythic: [5, 5],
+};
+
+export const STATS_PER_RARITY: Record<Rarity, number> = {
+  Common: 1,
+  Uncommon: 2,
+  Rare: 3,
+  Epic: 4,
+  Legendary: 5,
+  Mythic: 5,
 };
 
 export const RARITY_MULT: Record<Rarity, number> = {
@@ -31,61 +40,77 @@ export const RARITY_MULT: Record<Rarity, number> = {
 export const STAT_KEYS = [
   "health",
   "damage",
+  "magicDamage",
   "armor",
+  "dodge",
+  "regen",
+  "luck",
   "critChance",
   "critDamage",
-  "attackSpeed",
-  "dodge",
   "lifesteal",
-  "armorPen",
-  "regen",
-  "goldFind",
-  "lootChance",
   "poison",
+  "poisonChance",
   "bleed",
-  "fire",
-  "mining",
-  "undeadDamage",
-  "execute",
+  "bleedChance",
+  "thorns",
+  "barrier",
 ] as const;
 
 export type StatKey = (typeof STAT_KEYS)[number];
 export type Stats = Partial<Record<StatKey, number>>;
+export type MagicSchool = "chain" | "fire" | "frost";
 
 export const STAT_LABEL: Record<StatKey, string> = {
   health: "Health",
-  damage: "Damage",
+  damage: "Physical Damage",
+  magicDamage: "Magic Damage",
   armor: "Armor",
-  critChance: "Critical Chance",
-  critDamage: "Critical Damage",
-  attackSpeed: "Attack Speed",
   dodge: "Dodge",
+  regen: "Regen",
+  luck: "Luck",
+  critChance: "Crit Chance",
+  critDamage: "Crit Damage",
   lifesteal: "Lifesteal",
-  armorPen: "Armor Penetration",
-  regen: "Health Regeneration",
-  goldFind: "Gold Find",
-  lootChance: "Loot Chance",
-  poison: "Poison Damage",
-  bleed: "Bleed Damage",
-  fire: "Fire Damage",
-  mining: "Mining Bonus",
-  undeadDamage: "Undead Damage",
-  execute: "Execute Damage",
+  poison: "Poison",
+  poisonChance: "Poison Chance",
+  bleed: "Bleed",
+  bleedChance: "Bleed Chance",
+  thorns: "Thorns",
+  barrier: "Barrier",
 };
 
 export const PERCENT_STATS = new Set<StatKey>([
+  "dodge",
+  "luck",
   "critChance",
   "critDamage",
-  "attackSpeed",
-  "dodge",
   "lifesteal",
-  "armorPen",
-  "goldFind",
-  "lootChance",
-  "mining",
-  "undeadDamage",
-  "execute",
+  "poisonChance",
+  "bleedChance",
 ]);
+
+export const INT_STATS = new Set<StatKey>([
+  "health",
+  "damage",
+  "magicDamage",
+  "armor",
+  "regen",
+  "poison",
+  "bleed",
+  "thorns",
+  "barrier",
+]);
+
+const LEGACY_STAT: Record<string, StatKey> = {
+  goldFind: "luck",
+  lootChance: "luck",
+  mining: "luck",
+  fire: "magicDamage",
+  armorPen: "damage",
+  execute: "critDamage",
+  undeadDamage: "damage",
+  attackSpeed: "dodge",
+};
 
 export function emptyStats(): Record<StatKey, number> {
   const s = {} as Record<StatKey, number>;
@@ -103,9 +128,115 @@ export function scaleStats(s: Stats, mult: number): Stats {
   const out: Stats = {};
   for (const k of STAT_KEYS) {
     const v = s[k];
-    if (v) out[k] = Math.round(v * mult * 10) / 10;
+    if (v) out[k] = roundStat(k, v * mult);
   }
   return out;
+}
+
+export function roundStat(key: StatKey, value: number): number {
+  if (INT_STATS.has(key)) return Math.round(value);
+  return Math.round(value * 10) / 10;
+}
+
+const CHANCE_STATS = new Set<StatKey>(["poisonChance", "bleedChance"]);
+
+export function sanitizeStats(raw: Record<string, number> | Stats | null | undefined): Stats {
+  const out: Stats = {};
+  if (!raw) return out;
+  for (const [k, v] of Object.entries(raw)) {
+    if (!v) continue;
+    const key = (LEGACY_STAT[k] || k) as StatKey;
+    if (!STAT_KEYS.includes(key)) continue;
+    out[key] = roundStat(key, (out[key] || 0) + Number(v));
+  }
+  if (out.poison && !out.poisonChance) out.poisonChance = 30;
+  if (out.bleed && !out.bleedChance) out.bleedChance = 30;
+  return out;
+}
+
+export function exclusiveDamage(stats: Stats, magic: boolean): Stats {
+  const out: Stats = {};
+  for (const [k, v] of Object.entries(stats)) {
+    if (!v) continue;
+    if (magic && k === "damage") continue;
+    if (!magic && k === "magicDamage") continue;
+    out[k as StatKey] = v;
+  }
+  return out;
+}
+
+export function countableStatKeys(stats: Stats): StatKey[] {
+  return (Object.keys(stats) as StatKey[]).filter((k) => STAT_KEYS.includes(k) && !!stats[k] && !CHANCE_STATS.has(k));
+}
+
+export function pickStatsForRarity(stats: Stats, rarity: Rarity): Stats {
+  const n = STATS_PER_RARITY[rarity] || 1;
+  const keep = new Set(countableStatKeys(stats).slice(0, n));
+  const out: Stats = {};
+  for (const [k, v] of Object.entries(stats)) {
+    if (!v) continue;
+    const key = k as StatKey;
+    if (keep.has(key)) out[key] = v;
+    else if (key === "poisonChance" && keep.has("poison")) out[key] = v;
+    else if (key === "bleedChance" && keep.has("bleed")) out[key] = v;
+  }
+  return out;
+}
+
+export function padItemStats(stats: Stats, pad: [StatKey, number][]): Stats {
+  const out: Stats = { ...stats };
+  for (const [k, v] of pad) {
+    if (countableStatKeys(out).length >= 5) break;
+    if (out[k] || CHANCE_STATS.has(k)) continue;
+    if (k === "damage" && out.magicDamage) continue;
+    if (k === "magicDamage" && out.damage) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function statMid(base: number, rarity: Rarity): number {
+  return base * (RARITY_MULT[rarity] || 1);
+}
+
+export function rollStatValue(key: StatKey, base: number, rarity: Rarity, unit = Math.random()): number {
+  const mid = statMid(base, rarity);
+  return roundStat(key, mid * (0.9 + unit * 0.2));
+}
+
+export function statRangeFor(key: StatKey, base: number, rarity: Rarity): { min: number; max: number } {
+  const mid = statMid(base, rarity);
+  return { min: roundStat(key, mid * 0.9), max: roundStat(key, mid * 1.1) };
+}
+
+export function rollDefinitionStats(
+  base: Stats,
+  rarity: Rarity,
+  magic: boolean,
+  roll: () => number = Math.random
+): Stats {
+  const clean = pickStatsForRarity(exclusiveDamage(sanitizeStats(base as Record<string, number>), magic), rarity);
+  const out: Stats = {};
+  for (const [k, b] of Object.entries(clean)) {
+    if (!b) continue;
+    out[k as StatKey] = rollStatValue(k as StatKey, b, rarity, roll());
+  }
+  return out;
+}
+
+export function hashUnit(seed: string, i: number): number {
+  let h = 2166136261;
+  const s = `${seed}:${i}`;
+  for (let n = 0; n < s.length; n++) h = Math.imul(h ^ s.charCodeAt(n), 16777619);
+  return ((h >>> 0) % 10000) / 10000;
+}
+
+export function schoolFromTags(tags: string[] | undefined): MagicSchool | null {
+  if (!tags?.includes("magic")) return null;
+  if (tags.includes("chain")) return "chain";
+  if (tags.includes("fire")) return "fire";
+  if (tags.includes("frost")) return "frost";
+  return "fire";
 }
 
 export const EQUIP_SLOTS = [
@@ -119,7 +250,6 @@ export const EQUIP_SLOTS = [
   "Neck",
   "Ring1",
   "Ring2",
-  "Accessory",
 ] as const;
 export type EquipSlot = (typeof EQUIP_SLOTS)[number];
 
@@ -130,7 +260,6 @@ export const CLASS_BASE = {
     armor: 8,
     critChance: 5,
     critDamage: 150,
-    attackSpeed: 0.9,
     dodge: 3,
     lifesteal: 0,
     passive: "Ironclad: +12% Armor, +8% Health",
@@ -142,7 +271,6 @@ export const CLASS_BASE = {
     armor: 3,
     critChance: 12,
     critDamage: 175,
-    attackSpeed: 1.15,
     dodge: 10,
     lifesteal: 4,
     passive: "Shadehand: +8% Crit, +6% Dodge, +4% Lifesteal",
@@ -154,11 +282,10 @@ export const CLASS_BASE = {
     armor: 4,
     critChance: 9,
     critDamage: 160,
-    attackSpeed: 1.05,
     dodge: 7,
     lifesteal: 0,
-    passive: "Thornbow: +10% Loot Chance, +6% Gold Find, +5% Crit",
-    pass: { lootChance: 10, goldFind: 6, critChance: 5 },
+    passive: "Thornbow: +10% Luck, +5% Crit",
+    pass: { luck: 10, critChance: 5 },
   },
 } as const;
 

@@ -13,21 +13,20 @@ type Props = {
   onCtrlClick: (item: Item) => void;
   onEquip?: (item: Item) => void;
   onContext?: (item: Item) => void;
+  onPick?: (item: Item) => void;
 };
 
-export function InventoryGrid({ cols, rows, items, dest, cell = 44, charLevel, onPlace, onCtrlClick, onEquip, onContext }: Props) {
+export function InventoryGrid({ cols, rows, items, dest, cell = 70, charLevel, onPlace, onCtrlClick, onEquip, onContext, onPick }: Props) {
   const [hover, setHover] = useState<{ item: Item; x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [lit, setLit] = useState<number | null>(null);
 
   const occupied = useMemo(() => {
     const g: (string | null)[][] = Array.from({ length: rows }, () => Array(cols).fill(null));
     for (const it of items) {
       if (it.grid_x == null || it.grid_y == null) continue;
-      const w = it.rotated ? it.height : it.width;
-      const h = it.rotated ? it.width : it.height;
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        if (g[it.grid_y + y]) g[it.grid_y + y]![it.grid_x + x] = it.id;
-      }
+      if (g[it.grid_y]) g[it.grid_y]![it.grid_x] = it.id;
     }
     return g;
   }, [items, cols, rows]);
@@ -44,8 +43,7 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 44, charLevel, o
         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
         const x = Math.floor((e.clientX - rect.left - 6) / (cell + 2));
         const y = Math.floor((e.clientY - rect.top - 6) / (cell + 2));
-        const it = items.find((i) => i.id === id);
-        onPlace(id, x, y, it?.rotated || 0);
+        onPlace(id, x, y, 0);
         setDrag(null);
       }}
     >
@@ -55,7 +53,12 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 44, charLevel, o
         const occ = occupied[y]?.[x];
         const origin = items.find((it) => it.id === occ && it.grid_x === x && it.grid_y === y);
         return (
-          <div key={i} className="cell">
+          <div
+            key={i}
+            className={`cell ${origin ? `has-item r-${origin.rarity}` : ""} ${lit === i || selected === origin?.id ? "lit" : ""}`}
+            onMouseEnter={() => setLit(i)}
+            onMouseLeave={() => setLit(null)}
+          >
             {origin ? (
               <div
                 draggable
@@ -68,7 +71,10 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 44, charLevel, o
                   if (e.ctrlKey || e.metaKey) {
                     e.preventDefault();
                     onCtrlClick(origin);
+                    return;
                   }
+                  setSelected(origin.id);
+                  onPick?.(origin);
                 }}
                 onDoubleClick={() => onEquip?.(origin)}
                 onContextMenu={(e) => {
@@ -78,18 +84,9 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 44, charLevel, o
                 onMouseEnter={(e) => setHover({ item: origin, x: e.clientX, y: e.clientY })}
                 onMouseMove={(e) => setHover({ item: origin, x: e.clientX, y: e.clientY })}
                 onMouseLeave={() => setHover(null)}
-                style={{
-                  position: "absolute",
-                  width: (origin.rotated ? origin.height : origin.width) * (cell + 2) - 2,
-                  height: (origin.rotated ? origin.width : origin.height) * (cell + 2) - 2,
-                  zIndex: 3,
-                }}
+                style={{ position: "absolute", inset: 0, zIndex: 3 }}
               >
-                <ItemFace
-                  item={origin}
-                  w={(origin.rotated ? origin.height : origin.width) * (cell + 2) - 4}
-                  h={(origin.rotated ? origin.width : origin.height) * (cell + 2) - 4}
-                />
+                <ItemFace item={origin} />
               </div>
             ) : null}
           </div>

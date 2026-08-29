@@ -5,6 +5,7 @@ import { CONFIG } from "./config.ts";
 import { db, now } from "./db.ts";
 import { newId, type AuthUser } from "./auth.ts";
 import * as game from "./game.ts";
+import { loadGate } from "./engine/gate.ts";
 
 type Client = { ws: WebSocket; user: AuthUser };
 
@@ -40,6 +41,11 @@ export function attachWs(server: Server) {
       return;
     }
     const client: Client = { ws, user };
+    if (loadGate().maintenance && user.role !== "admin") {
+      ws.send(JSON.stringify({ type: "maintenance", message: loadGate().message }));
+      ws.close();
+      return;
+    }
     clients.add(client);
     db.prepare("UPDATE users SET last_seen=? WHERE id=?").run(now(), user.id);
     ws.send(JSON.stringify({ type: "hello", online: [...clients].map((c) => c.user.username) }));

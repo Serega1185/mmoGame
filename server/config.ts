@@ -20,8 +20,8 @@ export const CONFIG = {
   GUILD_CAPACITY_PER_LEVEL: 5,
   GUILD_MAX_LEVEL: 10,
   GUILD_UPGRADE_BASE: 25_000,
-  GRID_COLS: 10,
-  GRID_ROWS: 6,
+  GRID_COLS: 4,
+  GRID_ROWS: 4,
   ROUNDS_PER_REGION: 10,
   SKILL_EVERY_ROUNDS: 2,
   STARTING_COINS: 80,
@@ -29,6 +29,13 @@ export const CONFIG = {
   COMBAT_MAX_TICKS: 2400,
   TICK_MS: 50,
   ADMIN_EMAIL: "seneschal@ashmarch.local",
+  FORGE_COST: {
+    Common: 25,
+    Uncommon: 60,
+    Rare: 140,
+    Epic: 320,
+    Legendary: 750,
+  } as Record<string, number>,
 };
 
 export type Config = typeof CONFIG;

@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import type { Item } from "./api";
-import { PCT, STAT_LABEL } from "./api";
+import { PCT, STAT_KEYS, STAT_LABEL } from "./api";
+import { useI18n } from "./i18n";
+import { itemIconSrc } from "./itemIcons";
 
 export function Glyph({ kind, size = 22 }: { kind: string; size?: number }) {
   const s = size;
@@ -29,54 +32,155 @@ export function Glyph({ kind, size = 22 }: { kind: string; size?: number }) {
       {kind === "censer" ? <path d="M8 8 H16 L14 18 H10 Z M12 4 V8 M8 4 H16" /> : null}
       {kind === "bag" ? <path d="M7 9 H17 L16 20 H8 Z M9 9 C9 6 15 6 15 9" /> : null}
       {kind === "hook" ? <path d="M8 4 L8 16 C8 20 16 20 16 14" /> : null}
-      {kind === "staff" ? <path d="M12 22 L12 6 M12 6 C16 6 16 2 12 2" /> : null}
+      {kind === "staff" || kind === "wand" ? <path d="M12 22 L12 6 M12 6 C16 6 16 2 12 2" /> : null}
       {kind === "stone" ? <path d="M6 16 L10 8 L16 10 L18 17 Z" /> : null}
-      {!["sword","greatsword","axe","halberd","hammer","mace","bow","crossbow","spear","knife","dagger","pick","shovel","sickle","shield","helm","hood","mask","chest","mail","plate","cloak","gloves","legs","boots","ring","neck","charm","potion","vial","torch","censer","bag","hook","staff","stone"].includes(kind) ? (
+      {!["sword","greatsword","axe","halberd","hammer","mace","bow","crossbow","spear","knife","dagger","pick","shovel","sickle","shield","helm","hood","mask","chest","mail","plate","cloak","gloves","legs","boots","ring","neck","charm","potion","vial","torch","censer","bag","hook","staff","wand","stone"].includes(kind) ? (
         <rect x="6" y="6" width="12" height="12" />
       ) : null}
     </svg>
   );
 }
 
-export function fmtStat(k: string, v: number) {
+export function fmtStat(k: string, v: number, label?: string) {
   const n = Math.round(v * 10) / 10;
   const sign = n >= 0 ? "+" : "";
-  return `${sign}${n}${PCT.has(k) ? "%" : ""} ${STAT_LABEL[k] || k}`;
+  return `${sign}${n}${PCT.has(k) ? "%" : ""} ${label || STAT_LABEL[k] || k}`;
+}
+
+export function statEntries(stats: Record<string, number>) {
+  const seen = new Set<string>();
+  const out: [string, number][] = [];
+  for (const k of STAT_KEYS) {
+    const v = stats[k];
+    if (v) {
+      out.push([k, v]);
+      seen.add(k);
+    }
+  }
+  for (const [k, v] of Object.entries(stats)) {
+    if (v && !seen.has(k)) out.push([k, v]);
+  }
+  return out;
 }
 
 export function ItemTooltip({ item, x, y, charLevel }: { item: Item; x: number; y: number; charLevel?: number }) {
+  const { t, itemName, setName } = useI18n();
+  const [alt, setAlt] = useState(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Alt") setAlt(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "Alt") setAlt(false);
+    };
+    const blur = () => setAlt(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
   const locked = charLevel != null && item.required_level > charLevel;
+  const school = item.magicSchool || (item.definition.tags || []).find((x) => x === "chain" || x === "fire" || x === "frost");
   return (
-    <div className={`tooltip parchment r-${item.rarity}`} style={{ left: Math.min(x + 12, window.innerWidth - 280), top: Math.min(y + 12, window.innerHeight - 220) }}>
-      <div className="rarity">{item.rarity}</div>
-      <strong>{item.definition.name}</strong>
-      <div>Item Level {item.item_level}</div>
+    <div className={`tooltip parchment r-${item.rarity}`} style={{ left: Math.min(x + 12, window.innerWidth - 300), top: Math.min(y + 12, window.innerHeight - 340) }}>
+      <div className="rarity">{t(`rarity_${item.rarity}`)}</div>
+      <strong>{itemName(item)}</strong>
+      {school ? (
+        <div className="school-block">
+          <div>{t(`school_${school}`)}</div>
+          <div className="muted school-desc">{t(`schoolDesc_${school}`)}</div>
+        </div>
+      ) : null}
       <div className={locked ? "req" : ""}>
-        Required Level: {item.required_level}
-        {locked ? `  —  YOUR LEVEL: ${charLevel}` : ""}
+        {t("requiredLevel", { n: item.required_level })}
+        {locked ? `  —  ${t("yourLevel", { n: charLevel! })}` : ""}
       </div>
-      {item.definition.slot ? <div>Slot: {item.definition.slot}</div> : null}
-      {item.set ? <div>Set: {item.set.name}</div> : null}
+      {item.definition.slot ? <div>{t("slot")}: {t(`slot_${item.definition.slot}`) || item.definition.slot}</div> : null}
+      {item.set ? <div>{t("set")}: {setName(item.set.id || item.set.name)}</div> : null}
       <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
-        {Object.entries(item.stats)
-          .filter(([, v]) => v)
-          .map(([k, v]) => (
-            <li key={k}>{fmtStat(k, v)}</li>
-          ))}
+        {statEntries(item.stats).map(([k, v]) => {
+          const range = item.statRanges?.[k];
+          const label = t(`stat_${k}`);
+          if (alt && range) {
+            const pct = PCT.has(k) ? "%" : "";
+            return (
+              <li key={k}>
+                {fmtStat(k, v, label)}{" "}
+                <span className="muted">
+                  ({range.min}
+                  {pct}–{range.max}
+                  {pct})
+                </span>
+              </li>
+            );
+          }
+          return <li key={k}>{fmtStat(k, v, label)}</li>;
+        })}
       </ul>
-      <em style={{ display: "block", marginTop: 6, fontSize: "0.82rem" }}>{item.definition.flavor}</em>
-      <div className="muted">Value {item.value} crowns · {item.width}×{item.height}</div>
+      <div className="muted">{t("holdAlt")}</div>
+      <div className="muted">{t("valueCrowns", { n: item.value })}</div>
     </div>
   );
 }
 
-export function ItemFace({ item, w, h }: { item: Item; w: number; h: number }) {
+export type SetTip = {
+  set: string;
+  setId?: string;
+  pieces: number;
+  size?: number;
+  tiers?: { pieces: number; bonus: Record<string, number> }[];
+};
+
+export function SetTooltip({ set: s, x, y }: { set: SetTip; x: number; y: number }) {
+  const { t, setName } = useI18n();
+  const size = s.size || s.tiers?.[s.tiers.length - 1]?.pieces || 5;
+  const tiers = s.tiers?.length
+    ? s.tiers
+    : [
+        { pieces: 2, bonus: {} },
+        { pieces: 5, bonus: {} },
+      ];
   return (
-    <div className={`item-tile r-${item.rarity}`} style={{ width: w, height: h }} title={item.definition.name}>
-      <div>
-        <Glyph kind={item.definition.glyph} />
-        <div style={{ fontSize: 9, lineHeight: 1.1 }}>{item.definition.name}</div>
+    <div
+      className="tooltip parchment set-tip"
+      style={{ left: Math.min(x + 14, window.innerWidth - 300), top: Math.min(y + 12, window.innerHeight - 260) }}
+    >
+      <strong>{setName(s.setId || s.set)}</strong>
+      <div className="set-count">
+        {t("setCollected", { have: s.pieces, need: size })}
       </div>
+      {tiers.map((tier) => {
+        const on = s.pieces >= tier.pieces;
+        const stats = Object.entries(tier.bonus).filter(([, v]) => v);
+        return (
+          <div key={tier.pieces} className={`set-tier ${on ? "on" : "off"}`}>
+            <div className="set-tier-n">{t("setBonusN", { n: tier.pieces })}</div>
+            {stats.length ? (
+              <ul>
+                {stats.map(([k, v]) => (
+                  <li key={k}>{fmtStat(k, v, t(`stat_${k}`))}</li>
+                ))}
+              </ul>
+            ) : (
+              <div className="muted">{t("setNoBonus")}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ItemFace({ item }: { item: Item }) {
+  const { itemName } = useI18n();
+  const name = itemName(item);
+  return (
+    <div className={`item-tile r-${item.rarity}`}>
+      <img className="item-art" src={itemIconSrc(item)} alt={name} draggable={false} />
     </div>
   );
 }

@@ -3,30 +3,27 @@ import { db, now } from "../db.ts";
 import { CONFIG } from "../config.ts";
 import {
   RARITIES,
-  RARITY_AFFIXES,
   RARITY_MULT,
   RARITY_WEIGHTS,
+  exclusiveDamage,
+  hashUnit,
+  pickStatsForRarity,
+  rollDefinitionStats,
+  sanitizeStats,
+  schoolFromTags,
+  statRangeFor,
   type Rarity,
+  type StatKey,
   type Stats,
-  scaleStats,
 } from "../engine/stats.ts";
 
-function rand(min: number, max: number) {
-  return min + Math.random() * (max - min);
-}
-function irand(min: number, max: number) {
-  return Math.floor(rand(min, max + 1));
-}
-function pick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!;
-}
-
-export function rollRarity(luck = 0, min?: string): Rarity {
+export function rollRarity(luck = 0, min?: string, table?: Record<string, number>): Rarity {
   const boost = 1 + luck / 100;
   const weights = RARITIES.map((r) => {
-    const base = RARITY_WEIGHTS[r];
+    const base = Number(table?.[r] ?? RARITY_WEIGHTS[r]);
+    const n = Number.isFinite(base) && base > 0 ? base : 0;
     const idx = RARITIES.indexOf(r);
-    return idx >= 2 ? base * boost : base;
+    return idx >= 2 ? n * boost : n;
   });
   const minIdx = min ? RARITIES.indexOf(min as Rarity) : 0;
   let total = 0;
@@ -69,6 +66,7 @@ export function generateInstance(opts: {
   region?: number;
   luck?: number;
   forceRarity?: Rarity;
+  rarityWeights?: Record<string, number>;
 }): InstanceRow {
   const def = db.prepare("SELECT * FROM item_definitions WHERE id = ?").get(opts.definitionId) as {
     id: string;
@@ -79,44 +77,31 @@ export function generateInstance(opts: {
     height: number;
     base_stats: string;
     affix_pool: string;
+    tags: string;
   };
   if (!def) throw new Error("Unknown item definition");
-  const rarity = opts.forceRarity || rollRarity(opts.luck || 0, def.rarity_min);
-  const region = opts.region || 1;
-  const itemLevel = Math.max(def.base_level, region * 3 + irand(-1, 2));
-  const required = CONFIG.ITEM_REQUIRED_LEVEL
-    ? Math.max(1, def.required_level + Math.max(0, Math.floor((itemLevel - def.base_level) / 4)))
-    : 1;
-  const base = JSON.parse(def.base_stats) as Stats;
-  const pool = JSON.parse(def.affix_pool) as { key: keyof Stats; min: number; max: number }[];
-  const [amin, amax] = RARITY_AFFIXES[rarity];
-  const nAff = irand(amin, amax);
+  const rarity = opts.forceRarity || rollRarity(opts.luck || 0, def.rarity_min, opts.rarityWeights);
+  const required = CONFIG.ITEM_REQUIRED_LEVEL ? Math.max(1, def.required_level) : 1;
+  const tags = JSON.parse(def.tags || "[]") as string[];
+  const magic = tags.includes("magic");
+  const base = sanitizeStats(JSON.parse(def.base_stats) as Stats);
+  const id = uuid();
+  let ri = 0;
+  const stats = rollDefinitionStats(base, rarity, magic, () => hashUnit(id, ri++));
   const affixes: { key: string; value: number }[] = [];
-  const used = new Set<string>();
-  const stats: Stats = scaleStats(base, RARITY_MULT[rarity] * (1 + itemLevel * 0.03));
-  if (pool.length) {
-    for (let i = 0; i < nAff; i++) {
-      const p = pick(pool.filter((x) => !used.has(String(x.key))) || pool);
-      if (!p) break;
-      used.add(String(p.key));
-      const value = Math.round(rand(p.min, p.max) * RARITY_MULT[rarity] * 10) / 10;
-      affixes.push({ key: String(p.key), value });
-      stats[p.key] = (stats[p.key] || 0) + value;
-    }
-  }
   const row: InstanceRow = {
-    id: uuid(),
+    id,
     definition_id: def.id,
     owner_user_id: opts.ownerUserId,
     owner_character_id: opts.ownerCharacterId ?? null,
     location: opts.location,
     rarity,
-    item_level: itemLevel,
+    item_level: 1,
     required_level: required,
     stats: JSON.stringify(stats),
     affixes: JSON.stringify(affixes),
-    width: def.width,
-    height: def.height,
+    width: 1,
+    height: 1,
     rotated: 0,
     stack: 1,
     grid_x: null,
@@ -142,7 +127,34 @@ export function itemValue(inst: InstanceRow): number {
   const stats = JSON.parse(inst.stats) as Stats;
   const sum = Object.values(stats).reduce((a, b) => a + Math.abs(b || 0), 0);
   const r = RARITY_MULT[inst.rarity as Rarity] || 1;
-  return Math.max(4, Math.round(sum * 2.2 * r + inst.item_level * 3));
+  return Math.max(4, Math.round(sum * 2.2 * r));
+}
+
+export function instanceStatRanges(base: Stats, rarity: Rarity, magic: boolean) {
+  const clean = pickStatsForRarity(exclusiveDamage(sanitizeStats(base as Record<string, number>), magic), rarity);
+  const ranges: Record<string, { min: number; max: number }> = {};
+  for (const [k, b] of Object.entries(clean)) {
+    if (!b) continue;
+    ranges[k] = statRangeFor(k as StatKey, b, rarity);
+  }
+  return ranges;
+}
+
+export function rerollInstanceFromDefinition(inst: InstanceRow) {
+  const def = db.prepare("SELECT base_stats, tags FROM item_definitions WHERE id = ?").get(inst.definition_id) as
+    | { base_stats: string; tags: string }
+    | undefined;
+  if (!def) return inst;
+  const tags = JSON.parse(def.tags || "[]") as string[];
+  const magic = tags.includes("magic");
+  const base = sanitizeStats(JSON.parse(def.base_stats) as Stats);
+  let i = 0;
+  const stats = rollDefinitionStats(base, inst.rarity as Rarity, magic, () => hashUnit(inst.id, i++));
+  inst.stats = JSON.stringify(stats);
+  inst.affixes = "[]";
+  db.prepare("UPDATE item_instances SET stats = ?, affixes = ?, item_level = 1 WHERE id = ?").run(inst.stats, inst.affixes, inst.id);
+  inst.item_level = 1;
+  return inst;
 }
 
 export function hydrate(inst: InstanceRow) {
@@ -150,14 +162,24 @@ export function hydrate(inst: InstanceRow) {
   const setRow = def?.set_id
     ? (db.prepare("SELECT * FROM item_sets WHERE id = ?").get(def.set_id as string) as Record<string, unknown> | undefined)
     : null;
+  const tags = def ? (JSON.parse(String(def.tags)) as string[]) : [];
+  const magic = tags.includes("magic");
+  const base = def ? sanitizeStats(JSON.parse(String(def.base_stats)) as Stats) : {};
+  const rarity = inst.rarity as Rarity;
+  const stats = pickStatsForRarity(
+    exclusiveDamage(sanitizeStats(JSON.parse(inst.stats) as Stats), magic),
+    rarity
+  );
   return {
     ...inst,
-    stats: JSON.parse(inst.stats),
-    affixes: JSON.parse(inst.affixes),
+    stats,
+    affixes: [],
+    statRanges: instanceStatRanges(base, rarity, magic),
+    magicSchool: schoolFromTags(tags),
     definition: {
       ...def,
-      base_stats: def ? JSON.parse(String(def.base_stats)) : {},
-      tags: def ? JSON.parse(String(def.tags)) : [],
+      base_stats: base,
+      tags,
     },
     set: setRow || null,
     value: itemValue(inst),

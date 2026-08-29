@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createServer as createVite } from "vite";
 import { CONFIG } from "./config.ts";
 import { seedIfEmpty } from "./seed/run.ts";
+import { flattenToOneCell, reflowInventories } from "./engine/inventory.ts";
 import { authOptional } from "./auth.ts";
 import { api } from "./routes/api.ts";
 import { attachWs } from "./wsHub.ts";
@@ -17,6 +18,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
 seedIfEmpty();
+flattenToOneCell();
+reflowInventories();
 expireAuctions();
 setInterval(expireAuctions, 30_000);
 
@@ -26,6 +29,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.use(authOptional);
 app.use("/api", api);
+app.use("/assets", express.static(path.join(root, "assets")));
 
 const httpServer = createServer(app);
 attachWs(httpServer);
@@ -39,7 +43,10 @@ async function start() {
   } else {
     const vite = await createVite({
       configFile: path.join(root, "vite.config.ts"),
-      server: { middlewareMode: true, hmr: { server: httpServer } },
+      server: {
+        middlewareMode: true,
+        hmr: { server: httpServer, port: CONFIG.PORT, clientPort: CONFIG.PORT },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
