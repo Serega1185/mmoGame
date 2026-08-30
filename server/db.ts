@@ -124,6 +124,23 @@ try {
 } catch {
   /* ignore */
 }
+try {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS enemy_i18n (
+      enemy_id TEXT NOT NULL REFERENCES enemies(id) ON DELETE CASCADE,
+      lang TEXT NOT NULL,
+      name TEXT NOT NULL,
+      PRIMARY KEY (enemy_id, lang)
+    )`
+  );
+} catch {
+  /* ignore */
+}
+try {
+  db.exec("ALTER TABLE enemies ADD COLUMN icon TEXT NOT NULL DEFAULT ''");
+} catch {
+  /* already present */
+}
 
 export function now() {
   return Date.now();

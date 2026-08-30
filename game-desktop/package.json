@@ -1,0 +1,26 @@
+{
+  "name": "my-mmo-game",
+  "version": "1.0.0",
+  "description": "My MMO Game",
+  "main": "main.js",
+
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+
+  "build": {
+    "appId": "com.mygame.mmo",
+    "productName": "My MMO Game",
+    "icon": "icon.ico",
+
+    "win": {
+      "target": "portable"
+    }
+  }
+}

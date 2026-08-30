@@ -110,21 +110,57 @@ function walkPng(dir: string, urlPrefix: string): string[] {
     .map((f) => `${urlPrefix}/${f}`.replace(/\\/g, "/"));
 }
 
+function walkImages(dir: string, urlPrefix: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name);
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      out.push(...walkImages(full, `${urlPrefix}/${name}`));
+    } else if (/\.(png|webp|jpg|jpeg|svg)$/i.test(name)) {
+      out.push(`${urlPrefix}/${name}`.replace(/\\/g, "/"));
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 export function listItemIcons(): string[] {
   const stock = walkPng(STOCK_DIR, "/assets/64x64");
   const custom = walkPng(ICON_DIR, "/assets/custom");
   return [...stock, ...custom];
 }
 
+export function listAssetIcons(rel: "pers" | "mob"): string[] {
+  const dir = path.join(root, "assets", rel);
+  fs.mkdirSync(dir, { recursive: true });
+  return walkImages(dir, `/assets/${rel}`);
+}
+
 export function saveUploadedIcon(dataUrl: string): { error?: string; path?: string } {
+  return writeUploadedImage(dataUrl, ICON_DIR, "/assets/custom");
+}
+
+export function saveUploadedAsset(dataUrl: string, rel: "pers" | "mob"): { error?: string; path?: string } {
+  const dir = path.join(root, "assets", rel);
+  fs.mkdirSync(dir, { recursive: true });
+  return writeUploadedImage(dataUrl, dir, `/assets/${rel}`);
+}
+
+function writeUploadedImage(dataUrl: string, dir: string, urlPrefix: string): { error?: string; path?: string } {
   const m = String(dataUrl || "").match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)$/i);
   if (!m) return { error: "That is not an image." };
   const ext = m[1]!.toLowerCase() === "jpeg" || m[1]!.toLowerCase() === "jpg" ? "jpg" : m[1]!.toLowerCase();
   const buf = Buffer.from(m[2]!.replace(/\s/g, ""), "base64");
   if (buf.length < 32 || buf.length > 2_000_000) return { error: "The image is too large." };
   const name = `i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  fs.writeFileSync(path.join(ICON_DIR, name), buf);
-  return { path: `/assets/custom/${name}` };
+  fs.writeFileSync(path.join(dir, name), buf);
+  return { path: `${urlPrefix}/${name}` };
 }
 
 export function normalizeIcon(raw: unknown): string {

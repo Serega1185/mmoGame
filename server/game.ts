@@ -1,7 +1,8 @@
 import { v4 as uuid } from "uuid";
 import { db, now, tx } from "./db.ts";
 import { CONFIG } from "./config.ts";
-import { CLASS_BASE, emptyStats, EQUIP_SLOTS, RARITIES, sanitizeStats, STAT_KEYS, type Stats } from "./engine/stats.ts";
+import { emptyStats, EQUIP_SLOTS, RARITIES, sanitizeStats, STAT_KEYS, type Stats } from "./engine/stats.ts";
+import { loadHeroBase, loadHeroCatalog, publicHeroes, seedHeroes, adminSaveHero as writeHero } from "./engine/heroTables.ts";
 import { generateInstance, hydrate, destroyInstance, itemValue, rerollInstanceFromDefinition, rollRarity, type InstanceRow } from "./engine/items.ts";
 import {
   buildGrid,
@@ -23,13 +24,16 @@ import { loadGate, saveGate } from "./engine/gate.ts";
 import { defaultPackConfig, loadPackConfig, packOddsFor, rollPackExtra, savePackConfig } from "./engine/packTables.ts";
 import { defaultMineConfig, loadMineConfig, ORE_META, oreIdForRarity, saveMineConfig, type OreId } from "./engine/mineTables.ts";
 import {
+  listAssetIcons,
   listItemIcons,
   loadItemCatalog,
   localesFor,
   normalizeIcon,
   saveItemI18n,
+  saveUploadedAsset,
   saveUploadedIcon,
 } from "./engine/itemCatalog.ts";
+import { loadEnemyCatalog, localesForEnemy, saveEnemyI18n } from "./engine/enemyCatalog.ts";
 import { applyTalentPick, canPickTalent, ensureTalentTree, freshTalentTree } from "./engine/talents.ts";
 import {
   combatKind,
@@ -118,8 +122,16 @@ export function snapshotCharacter(c: Record<string, unknown>) {
   const talentPoints = Number(c.talent_points || 0);
   const march = ensureMarch(c);
   c = { ...c, depth: Number(c.depth || 1), round: Number(c.round || 1) };
+  const hero = loadHeroBase(String(c.class));
   return {
-    character: { ...c, power, talent_points: talentPoints, depth: Number(c.depth || 1) },
+    character: {
+      ...c,
+      power,
+      talent_points: talentPoints,
+      depth: Number(c.depth || 1),
+      classIcon: hero?.portrait || hero?.icon || "",
+      battleIcon: hero?.icon || "",
+    },
     march: toPublicMarch(march),
     inventory: inv,
     equipment: eq,
@@ -140,11 +152,12 @@ export function snapshotCharacter(c: Record<string, unknown>) {
 export function createCharacter(userId: string, name: string, cls: string) {
   const alive = db.prepare("SELECT id FROM characters WHERE user_id = ? AND status = 'ALIVE'").get(userId);
   if (alive) return { error: "You already have a living wayfarer." };
-  if (!CLASS_BASE[cls as keyof typeof CLASS_BASE]) return { error: "Unknown calling." };
+  seedHeroes();
+  const base = loadHeroBase(cls);
+  if (!base) return { error: "Unknown calling." };
   if (!/^[A-Za-z][A-Za-z0-9 _-]{2,19}$/.test(name)) return { error: "A proper name, three to twenty letters." };
-  const taken = db.prepare("SELECT id FROM characters WHERE name = ? COLLATE NOCASE").get(name);
+  const taken = db.prepare("SELECT id FROM characters WHERE name = ? COLLATE NOCASE AND status = 'ALIVE'").get(name);
   if (taken) return { error: "That name is already carved." };
-  const base = CLASS_BASE[cls as keyof typeof CLASS_BASE];
   const id = uuid();
   const hp = base.health;
   const march = generateMarch(1);
@@ -157,7 +170,55 @@ export function createCharacter(userId: string, name: string, cls: string) {
     JSON.stringify(march),
     id
   );
+  grantHeroStarters(userId, id, cls);
   return { error: null, id };
+}
+
+function grantHeroStarters(userId: string, characterId: string, heroId: string) {
+  const kit = loadHeroBase(heroId)?.starters || [];
+  if (!kit.length) return;
+  const worn = new Set(loadEquip(characterId).map((e) => e.equip_slot).filter(Boolean) as string[]);
+  const grid = buildGrid(loadInv(characterId));
+  for (const defId of kit) {
+    const def = db.prepare("SELECT id, slot FROM item_definitions WHERE id=?").get(defId) as { id: string; slot: string | null } | undefined;
+    if (!def) continue;
+    let inst: InstanceRow;
+    try {
+      inst = generateInstance({
+        definitionId: def.id,
+        ownerUserId: userId,
+        ownerCharacterId: characterId,
+        location: "INVENTORY",
+        region: 1,
+        forceRarity: "Common",
+      });
+    } catch {
+      continue;
+    }
+    let slot: string | null = null;
+    if (def.slot && (EQUIP_SLOTS as readonly string[]).includes(def.slot)) {
+      if (def.slot === "Ring1" || def.slot === "Ring2") {
+        slot = !worn.has("Ring1") ? "Ring1" : !worn.has("Ring2") ? "Ring2" : null;
+      } else if (!worn.has(def.slot)) {
+        slot = def.slot;
+      }
+    }
+    if (slot) {
+      db.prepare(
+        "UPDATE item_instances SET location='EQUIPMENT', grid_x=NULL, grid_y=NULL, rotated=0, equip_slot=? WHERE id=?"
+      ).run(slot, inst.id);
+      worn.add(slot);
+      continue;
+    }
+    const spot = findPlace(grid, inst);
+    if (!spot) continue;
+    db.prepare("UPDATE item_instances SET location='INVENTORY', grid_x=?, grid_y=?, rotated=0, equip_slot=NULL WHERE id=?").run(
+      spot.x,
+      spot.y,
+      inst.id
+    );
+    grid[spot.y]![spot.x] = inst.id;
+  }
 }
 
 function pickEnemy(regionId: number, kind: "normal" | "elite" | "boss") {
@@ -283,17 +344,59 @@ type EnemyRow = {
   dodge: number;
   abilities: string;
   loot_table: string;
+  icon?: string;
 };
 
+type EnemyLoot = {
+  undead?: boolean;
+  icon?: string;
+  regen?: number;
+  poison?: number;
+  poisonChance?: number;
+  bleed?: number;
+  bleedChance?: number;
+  fireDmg?: number;
+  fireHits?: number;
+  fireChance?: number;
+  heavyPct?: number;
+};
+
+function parseEnemyLoot(raw: string): EnemyLoot {
+  try {
+    const o = JSON.parse(raw || "{}");
+    return o && typeof o === "object" ? (o as EnemyLoot) : {};
+  } catch {
+    return {};
+  }
+}
+
+function enemyIconOf(enemy: EnemyRow, loot?: EnemyLoot) {
+  const fromCol = String(enemy.icon || "").trim();
+  if (fromCol) return fromCol;
+  return String((loot || parseEnemyLoot(enemy.loot_table)).icon || "").trim();
+}
+
 function toFoe(enemy: EnemyRow) {
-  const lootTable = JSON.parse(enemy.loot_table || "{}") as { undead?: boolean };
+  const loot = parseEnemyLoot(enemy.loot_table);
   const abilities = JSON.parse(enemy.abilities || "[]") as string[];
+  const has = (k: string) => abilities.includes(k);
+  const regen = has("regen") ? Math.max(0, Number(loot.regen ?? 2)) : 0;
+  const poison = has("poison") ? Math.max(0, Number(loot.poison ?? 4)) : 0;
+  const poisonChance = has("poison") ? Math.max(0, Number(loot.poisonChance ?? 40)) : 0;
+  const bleed = has("bleed") ? Math.max(0, Number(loot.bleed ?? 4)) : 0;
+  const bleedChance = has("bleed") ? Math.max(0, Number(loot.bleedChance ?? 40)) : 0;
+  const fireDmg = has("fire") ? Math.max(0, Number(loot.fireDmg ?? 4)) : 0;
+  const fireHits = has("fire") ? Math.max(0, Math.trunc(Number(loot.fireHits ?? 3))) : 0;
+  const fireChance = has("fire") ? Math.max(0, Number(loot.fireChance ?? 30)) : 0;
+  const heavyPct = has("heavy") ? Math.max(0, Number(loot.heavyPct ?? 20)) : 0;
   return {
     id: String(enemy.id),
     name: enemy.name,
     hp: enemy.hp,
     maxHp: enemy.hp,
-    undead: !!lootTable.undead,
+    undead: !!loot.undead,
+    heavyPct,
+    burnOnHit: fireDmg > 0 && fireHits > 0 ? { chance: fireChance, hits: fireHits, dmg: fireDmg } : undefined,
     stats: {
       ...emptyStats(),
       health: enemy.hp,
@@ -302,11 +405,11 @@ function toFoe(enemy: EnemyRow) {
       critChance: enemy.crit_chance * 100,
       critDamage: 150,
       dodge: enemy.dodge * 100,
-      regen: abilities.includes("regen") ? 2 : 0,
-      bleed: abilities.includes("bleed") ? 4 : 0,
-      bleedChance: abilities.includes("bleed") ? 40 : 0,
-      poison: abilities.includes("poison") ? 4 : 0,
-      poisonChance: abilities.includes("poison") ? 40 : 0,
+      regen,
+      bleed,
+      bleedChance,
+      poison,
+      poisonChance,
     },
   };
 }
@@ -343,6 +446,7 @@ function packView(pack: EnemyRow[]) {
     maxHp: e.hp,
     damage: e.damage,
     armor: e.armor,
+    icon: enemyIconOf(e),
   }));
 }
 
@@ -1524,12 +1628,46 @@ export function itemCatalog() {
   return loadItemCatalog();
 }
 
+export function enemyCatalog() {
+  return loadEnemyCatalog();
+}
+
+export function heroCatalog() {
+  return loadHeroCatalog();
+}
+
+export function heroRoster() {
+  return publicHeroes();
+}
+
+export function adminSaveHero(raw: Record<string, unknown>) {
+  const r = writeHero(raw);
+  if (!r.error) logGame("ADMIN", `saved hero ${r.id}`);
+  return r;
+}
+
 export function adminItemIcons() {
   return listItemIcons();
 }
 
+export function adminHeroIcons() {
+  return listAssetIcons("pers");
+}
+
+export function adminMobIcons() {
+  return listAssetIcons("mob");
+}
+
 export function adminSaveItemIcon(dataUrl: string) {
   return saveUploadedIcon(dataUrl);
+}
+
+export function adminSaveHeroIcon(dataUrl: string) {
+  return saveUploadedAsset(dataUrl, "pers");
+}
+
+export function adminSaveMobIcon(dataUrl: string) {
+  return saveUploadedAsset(dataUrl, "mob");
 }
 
 export function adminSets() {
@@ -1679,6 +1817,181 @@ export function adminSaveGate(raw: unknown) {
   const gate = saveGate(raw);
   logGame("ADMIN", `gate ${gate.version}${gate.maintenance ? " closed" : " open"}`);
   return gate;
+}
+
+const ENEMY_KINDS = ["normal", "elite", "boss"] as const;
+const ENEMY_GLYPHS = ["bandit", "beast", "knight", "undead", "witch", "cultist", "necromancer", "orc"];
+const ENEMY_ABILITIES = ["heavy", "regen", "bleed", "poison", "fire"];
+
+function syncEnemyPools(id: string, region: number, kind: string) {
+  const rows = db.prepare("SELECT id, enemy_pool, elite_pool, boss_id FROM regions").all() as {
+    id: number;
+    enemy_pool: string;
+    elite_pool: string;
+    boss_id: string;
+  }[];
+  const up = db.prepare("UPDATE regions SET enemy_pool=?, elite_pool=?, boss_id=? WHERE id=?");
+  for (const r of rows) {
+    const normals = parseIdList(r.enemy_pool).filter((x) => x !== id);
+    const elites = parseIdList(r.elite_pool).filter((x) => x !== id);
+    let boss = r.boss_id === id ? "" : r.boss_id;
+    if (r.id === region) {
+      if (kind === "normal") normals.push(id);
+      if (kind === "elite") elites.push(id);
+      if (kind === "boss") boss = id;
+    }
+    if (!boss) {
+      const fallback = db
+        .prepare("SELECT id FROM enemies WHERE region=? AND kind='boss' AND id!=? LIMIT 1")
+        .get(r.id, id) as { id: string } | undefined;
+      boss = fallback?.id || boss;
+    }
+    up.run(JSON.stringify(normals), JSON.stringify(elites), boss, r.id);
+  }
+}
+
+export function adminRegions() {
+  return db.prepare("SELECT id, name, slug FROM regions ORDER BY id").all() as { id: number; name: string; slug: string }[];
+}
+
+export function adminEnemyDefs() {
+  const rows = db
+    .prepare(
+      `SELECT id, name, kind, hp, damage, armor, crit_chance, attack_speed, dodge, abilities, loot_table, region, glyph, icon
+       FROM enemies ORDER BY region, kind, name COLLATE NOCASE`
+    )
+    .all() as Record<string, unknown>[];
+  return rows.map((row) => {
+    const loot = parseEnemyLoot(String(row.loot_table || "{}"));
+    const abilities = (JSON.parse(String(row.abilities || "[]")) as string[]).filter((a) => a !== "strike" && a !== "undead");
+    return {
+      id: String(row.id),
+      kind: String(row.kind),
+      hp: Number(row.hp) || 1,
+      damage: Number(row.damage) || 0,
+      armor: Number(row.armor) || 0,
+      crit_chance: Number(row.crit_chance) || 0,
+      dodge: Number(row.dodge) || 0,
+      abilities,
+      undead: !!loot.undead,
+      region: Number(row.region) || 1,
+      glyph: String(row.glyph || "bandit"),
+      icon: String(row.icon || loot.icon || ""),
+      potency: {
+        regen: Number(loot.regen ?? 2),
+        poison: Number(loot.poison ?? 4),
+        poisonChance: Number(loot.poisonChance ?? 40),
+        bleed: Number(loot.bleed ?? 4),
+        bleedChance: Number(loot.bleedChance ?? 40),
+        fireDmg: Number(loot.fireDmg ?? 4),
+        fireHits: Number(loot.fireHits ?? 3),
+        fireChance: Number(loot.fireChance ?? 30),
+        heavyPct: Number(loot.heavyPct ?? 20),
+      },
+      i18n: localesForEnemy(String(row.id)),
+    };
+  });
+}
+
+export function adminSaveEnemy(raw: Record<string, unknown>) {
+  const id = String(raw.id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+  if (!id) return { error: "Name a creature id." as const };
+  const names = (raw.names && typeof raw.names === "object" ? raw.names : {}) as Record<string, string>;
+  const name = String(names.en || names.ru || names.zh || raw.name || "").trim().slice(0, 80);
+  if (name.length < 2) return { error: "Name the creature." as const };
+  const kind = ENEMY_KINDS.includes(String(raw.kind) as (typeof ENEMY_KINDS)[number])
+    ? String(raw.kind)
+    : "normal";
+  const regions = adminRegions();
+  const regionIds = regions.map((r) => r.id);
+  const region = regionIds.includes(Number(raw.region)) ? Number(raw.region) : regionIds[0] || 1;
+  const glyph = ENEMY_GLYPHS.includes(String(raw.glyph)) ? String(raw.glyph) : String(raw.glyph || "bandit").slice(0, 24) || "bandit";
+  const hp = Math.max(1, Math.trunc(Number(raw.hp) || 50));
+  const damage = Math.max(0, Math.trunc(Number(raw.damage) || 0));
+  const armor = Math.max(0, Math.trunc(Number(raw.armor) || 0));
+  const crit = Math.min(1, Math.max(0, Number(raw.crit_chance) || 0));
+  const dodge = Math.min(1, Math.max(0, Number(raw.dodge) || 0));
+  const incoming = Array.isArray(raw.abilities) ? raw.abilities.map(String) : [];
+  const abilities = ENEMY_ABILITIES.filter((a) => incoming.includes(a));
+  const undead = !!raw.undead || glyph === "undead";
+  const pot = (raw.potency && typeof raw.potency === "object" ? raw.potency : {}) as Record<string, number>;
+  const num = (k: string, d: number) => {
+    const n = Number(pot[k]);
+    return Number.isFinite(n) && n >= 0 ? n : d;
+  };
+  const icon = normalizeIcon(raw.icon);
+  const loot: EnemyLoot = {
+    undead,
+    icon,
+    regen: num("regen", 2),
+    poison: num("poison", 4),
+    poisonChance: Math.min(100, num("poisonChance", 40)),
+    bleed: num("bleed", 4),
+    bleedChance: Math.min(100, num("bleedChance", 40)),
+    fireDmg: num("fireDmg", 4),
+    fireHits: Math.max(1, Math.trunc(num("fireHits", 3))),
+    fireChance: Math.min(100, num("fireChance", 30)),
+    heavyPct: num("heavyPct", 20),
+  };
+  const prev = db.prepare("SELECT kind, region FROM enemies WHERE id=?").get(id) as { kind: string; region: number } | undefined;
+  if (prev?.kind === "boss" && kind !== "boss") {
+    const other = db
+      .prepare("SELECT id FROM enemies WHERE region=? AND kind='boss' AND id!=? LIMIT 1")
+      .get(prev.region, id) as { id: string } | undefined;
+    if (!other) return { error: "Keep one boss on that depth." as const };
+  }
+  db.prepare(
+    `INSERT INTO enemies (id,name,kind,hp,damage,armor,crit_chance,attack_speed,dodge,abilities,loot_table,region,glyph,icon)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET
+       name=excluded.name, kind=excluded.kind, hp=excluded.hp, damage=excluded.damage, armor=excluded.armor,
+       crit_chance=excluded.crit_chance, dodge=excluded.dodge,
+       abilities=excluded.abilities, loot_table=excluded.loot_table, region=excluded.region, glyph=excluded.glyph, icon=excluded.icon`
+  ).run(
+    id,
+    name,
+    kind,
+    hp,
+    damage,
+    armor,
+    crit,
+    1,
+    dodge,
+    JSON.stringify(abilities),
+    JSON.stringify(loot),
+    region,
+    glyph,
+    icon
+  );
+  saveEnemyI18n(id, names);
+  syncEnemyPools(id, region, kind);
+  logGame("ADMIN", `enemy ${id} ${kind} d${region}`);
+  return { error: null, id };
+}
+
+export function adminDeleteEnemy(id: string) {
+  const enemyId = String(id || "");
+  if (!enemyId) return { error: "No such creature." as const };
+  const row = db.prepare("SELECT id, region, kind FROM enemies WHERE id=?").get(enemyId) as
+    | { id: string; region: number; kind: string }
+    | undefined;
+  if (!row) return { error: "No such creature." as const };
+  if (row.kind === "boss") {
+    const other = db
+      .prepare("SELECT id FROM enemies WHERE region=? AND kind='boss' AND id!=? LIMIT 1")
+      .get(row.region, enemyId) as { id: string } | undefined;
+    if (!other) return { error: "Keep one boss on that depth." as const };
+  }
+  db.prepare("DELETE FROM enemy_i18n WHERE enemy_id=?").run(enemyId);
+  db.prepare("DELETE FROM enemies WHERE id=?").run(enemyId);
+  syncEnemyPools(enemyId, -1, "");
+  logGame("ADMIN", `deleted enemy ${enemyId}`);
+  return { error: null };
 }
 
 export { storageCapacity, storageGridSize, loadStorage, characterPower };

@@ -4,6 +4,8 @@ import { CONFIG } from "../config.ts";
 import { SETS, ITEM_DEFS, SKILLS, REGIONS, ENEMIES } from "./content.ts";
 import { rerollInstanceFromDefinition, type InstanceRow } from "../engine/items.ts";
 import { seedItemI18n } from "../engine/itemCatalog.ts";
+import { seedEnemyI18n } from "../engine/enemyCatalog.ts";
+import { seedHeroes } from "../engine/heroTables.ts";
 
 function upsertCatalog() {
   const upSet = db.prepare(
@@ -74,6 +76,8 @@ export function refreshCatalog() {
   const rows = db.prepare("SELECT * FROM item_instances WHERE location != 'DESTROYED'").all() as InstanceRow[];
   for (const row of rows) rerollInstanceFromDefinition(row);
   seedItemI18n();
+  seedEnemyI18n();
+  seedHeroes();
 }
 
 export function seedIfEmpty() {

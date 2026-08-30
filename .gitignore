@@ -1,0 +1,7 @@
+node_modules/
+**/node_modules/
+game-desktop/node_modules/
+data/
+dist/
+*.log
+.DS_Store

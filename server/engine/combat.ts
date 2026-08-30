@@ -12,6 +12,7 @@ import {
   type Stats,
   type StatKey,
 } from "./stats.ts";
+import { loadHeroBase } from "./heroTables.ts";
 import { loadEquip } from "./inventory.ts";
 import { isTalentId } from "./talents.ts";
 
@@ -24,6 +25,8 @@ export type Combatant = {
   isMagic?: boolean;
   magicSchool?: MagicSchool | null;
   talents?: string[];
+  heavyPct?: number;
+  burnOnHit?: { chance: number; hits: number; dmg: number };
 };
 
 type Unit = Combatant & {
@@ -42,16 +45,30 @@ type Unit = Combatant & {
 };
 
 export function characterPower(character: { id: string; class: string; level: number }) {
-  const base = CLASS_BASE[character.class as keyof typeof CLASS_BASE];
+  const hero = loadHeroBase(character.class);
+  const fb = CLASS_BASE.Ironclad;
+  const health = hero?.health ?? fb.health;
+  const damage = hero?.damage ?? fb.damage;
+  const armor = hero?.armor ?? fb.armor;
+  const critChance = hero?.critChance ?? fb.critChance;
+  const critDamage = hero?.critDamage ?? fb.critDamage;
+  const dodge = hero?.dodge ?? fb.dodge;
+  const lifesteal = hero?.lifesteal ?? fb.lifesteal;
+  const luck = hero?.luck ?? 0;
+  const magicDamage = hero?.magicDamage ?? 0;
+  const pass = hero?.pass ?? { ...fb.pass };
   let stats = emptyStats();
-  stats.health = base.health + (character.level - 1) * 12;
-  stats.damage = base.damage + (character.level - 1) * 2;
-  stats.armor = base.armor + Math.floor((character.level - 1) * 0.6);
-  stats.critChance = base.critChance;
-  stats.critDamage = base.critDamage;
-  stats.dodge = base.dodge;
-  stats.lifesteal = base.lifesteal;
-  for (const [k, v] of Object.entries(base.pass)) {
+  const lv = Math.max(0, character.level - 1);
+  stats.health = health + lv * 12;
+  stats.damage = damage + lv * 2;
+  stats.armor = armor + Math.floor(lv * 0.6);
+  stats.critChance = critChance;
+  stats.critDamage = critDamage;
+  stats.dodge = dodge;
+  stats.lifesteal = lifesteal;
+  stats.luck = luck;
+  stats.magicDamage = magicDamage + (magicDamage > 0 ? lv * 2 : 0);
+  for (const [k, v] of Object.entries(pass)) {
     if (k === "healthPct") stats.health = Math.round(stats.health * (1 + v / 100));
     else if (k in stats) stats[k as StatKey] += v;
   }
@@ -272,6 +289,12 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       def.burnDmg = Math.max(1, Math.round((att.stats.magicDamage || 0) * 0.3));
       log.push(line(tick, "combat.burn", { name: def.name, id: def.id || def.name, n: def.burnHits }));
     }
+    const burn = att.burnOnHit;
+    if (burn && burn.dmg > 0 && burn.hits > 0 && Math.random() * 100 < burn.chance) {
+      def.burnHits = burn.hits;
+      def.burnDmg = Math.max(1, Math.round(burn.dmg));
+      log.push(line(tick, "combat.burn", { name: def.name, id: def.id || def.name, n: def.burnHits }));
+    }
     if (att.magicSchool === "frost" && Math.random() < 0.3) {
       def.frozen = true;
       log.push(line(tick, "combat.freeze", { name: def.name, id: def.id || def.name }));
@@ -286,6 +309,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       base *= 1 + Math.floor(missing / 0.1) * 0.05;
     }
     if (att.talents.has("finisher") && primary.hp / primary.maxHp < 0.25) base *= 1.2;
+    if ((att.heavyPct || 0) > 0) base *= 1 + att.heavyPct! / 100;
     let crit = false;
     if (Math.random() * 100 < (att.stats.critChance || 0)) {
       base *= (att.stats.critDamage || 150) / 100;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, EQUIP_LAYOUT, type Item } from "./api";
 import { InventoryGrid } from "./InventoryGrid";
 import { ChatDock } from "./ChatDock";
-import { HoverHint, ItemFace, ItemTooltip, SetTooltip, fmtStat, statEntries } from "./ui";
+import { HeroFace, HoverHint, ItemFace, ItemTooltip, SetTooltip, fmtStat, statEntries } from "./ui";
 import { LangSwitcher, useI18n } from "./i18n";
 import { BattleStage, applyAuraLine, auraFromStats, type BattleAura, type BattleFoe, type BattleFx } from "./BattleStage";
 import { SET_MARK } from "./itemIcons";
@@ -78,6 +78,8 @@ type Character = {
   skill_pending: number;
   enemies_defeated: number;
   gold_earned: number;
+  classIcon?: string;
+  battleIcon?: string;
   power: {
     stats: Record<string, number>;
     maxHp: number;
@@ -121,7 +123,7 @@ type GameState = {
   region: { name: string; theme: string; description: string };
   grid: { cols: number; rows: number };
   storage: null | { items: Item[]; cols: number; rows: number; cells: number; level: number; upgradeCost: number };
-  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number }[] | null;
+  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number; icon?: string }[] | null;
   packOdds?: { two: number; three: number };
   city?: CityInfo | null;
 };
@@ -136,8 +138,8 @@ type Fight = {
   won: boolean;
   dead?: boolean;
   awaiting?: boolean;
-  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number; armor?: number };
-  enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number }[];
+  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number; armor?: number; icon?: string };
+  enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number; icon?: string }[];
   log: { t: number; text: string; key?: string; vars?: Record<string, string | number> }[];
   gold?: number;
   loot?: Item[];
@@ -150,10 +152,55 @@ type Fight = {
   ore?: Item | null;
 };
 
-const CLASS_IDS = ["Ironclad", "Shadehand", "Thornbow"] as const;
+type HallHero = {
+  id: string;
+  health: number;
+  damage: number;
+  armor: number;
+  critChance: number;
+  critDamage: number;
+  dodge: number;
+  lifesteal: number;
+  luck: number;
+  magicDamage: number;
+  pass: Record<string, number>;
+  icon: string;
+  portrait?: string;
+  i18n: Record<string, { name: string; blurb: string }>;
+};
+
+function hallStartStats(h: HallHero) {
+  const s: Record<string, number> = {
+    health: h.health,
+    damage: h.damage,
+    armor: h.armor,
+    critChance: h.critChance,
+    critDamage: h.critDamage,
+    dodge: h.dodge,
+    lifesteal: h.lifesteal,
+    luck: h.luck,
+    magicDamage: h.magicDamage,
+  };
+  for (const [k, v] of Object.entries(h.pass || {})) {
+    if (!v) continue;
+    if (k === "healthPct") s.health = Math.round(s.health * (1 + v / 100));
+    else s[k] = (s[k] || 0) + v;
+  }
+  return s;
+}
+
+const HALL_STAT_KEYS = ["health", "damage", "magicDamage", "armor", "critChance", "critDamage", "dodge", "lifesteal", "luck", "regen"] as const;
+
+const FALLBACK_HALL: HallHero[] = [
+  { id: "Ironclad", health: 140, damage: 12, armor: 8, critChance: 5, critDamage: 150, dodge: 3, lifesteal: 0, luck: 0, magicDamage: 0, pass: { armor: 12, healthPct: 8 }, icon: "", i18n: {} },
+  { id: "Shadehand", health: 100, damage: 14, armor: 3, critChance: 12, critDamage: 175, dodge: 10, lifesteal: 4, luck: 0, magicDamage: 0, pass: { critChance: 8, dodge: 6, lifesteal: 4 }, icon: "", i18n: {} },
+  { id: "Thornbow", health: 110, damage: 13, armor: 4, critChance: 9, critDamage: 160, dodge: 7, lifesteal: 0, luck: 0, magicDamage: 0, pass: { luck: 10, critChance: 5 }, icon: "", i18n: {} },
+  { id: "Ashpriest", health: 95, damage: 8, armor: 3, critChance: 6, critDamage: 150, dodge: 5, lifesteal: 0, luck: 4, magicDamage: 14, pass: { regen: 2 }, icon: "", i18n: {} },
+  { id: "Warden", health: 125, damage: 13, armor: 6, critChance: 7, critDamage: 155, dodge: 5, lifesteal: 2, luck: 0, magicDamage: 0, pass: { armor: 6, healthPct: 4 }, icon: "", i18n: {} },
+];
 
 export default function App() {
-  const { t, te, itemName, setName, regionName, regionTheme, combatLine } = useI18n();
+  const { t, te, itemName, setName, regionName, regionTheme, combatLine, heroName, heroBlurb } = useI18n();
   const [boot, setBoot] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [game, setGame] = useState<GameState | null>(null);
@@ -191,6 +238,7 @@ export default function App() {
   } | null>(null);
   const [auth, setAuth] = useState({ email: "", password: "", username: "", tab: "login" as "login" | "register" | "forgot" });
   const [create, setCreate] = useState({ name: "", class: "Ironclad" });
+  const [heroes, setHeroes] = useState<HallHero[]>([]);
   const [gate, setGate] = useState<GateStatus | null>(null);
 
   const applyStatus = useCallback((s: GateStatus) => {
@@ -227,6 +275,18 @@ export default function App() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (game && game.character && !game.needCharacter) return;
+    void api<{ heroes: HallHero[] }>("/catalog/heroes")
+      .then((r) => {
+        const list = r.heroes || [];
+        setHeroes(list);
+        setCreate((cur) => (list.some((h) => h.id === cur.class) || !list[0] ? cur : { ...cur, class: list[0].id }));
+      })
+      .catch(() => {});
+  }, [user, game?.needCharacter, game?.character]);
 
   useEffect(() => {
     const foes = game?.pendingFight;
@@ -633,51 +693,82 @@ export default function App() {
         </div>
       );
     }
+    const roster = heroes.length ? heroes : FALLBACK_HALL;
+    const picked = roster.find((h) => h.id === create.class) || roster[0];
+    const startStats = picked ? hallStartStats(picked) : {};
     return (
       <div className="auth-screen">
         <div className="lang-bar">
           <LangSwitcher />
         </div>
-        <div className="panel auth-card">
+        <div className="panel auth-card hall-card">
           <h2>{t("newWayfarer")}</h2>
           <p className="muted">{t("newWayfarerHint")}</p>
-          <label>{t("name")}</label>
-          <input value={create.name} onChange={(e) => setCreate({ ...create, name: e.target.value })} />
-          <div style={{ display: "grid", gap: 8, margin: "12px 0" }}>
-            {CLASS_IDS.map((id) => (
-              <button key={id} onClick={() => setCreate({ ...create, class: id })} className={create.class === id ? "gold" : ""}>
-                {t(`class_${id}`)} — {t(`blurb_${id}`)}
+          <div className="hall-portraits">
+            {roster.map((h) => (
+              <button
+                key={h.id}
+                type="button"
+                className={`hall-slot${create.class === h.id ? " on" : ""}`}
+                onClick={() => setCreate({ ...create, class: h.id })}
+                title={heroName(h.id)}
+              >
+                <HeroFace icon={h.portrait || h.icon} alt={heroName(h.id)} />
               </button>
             ))}
           </div>
-          <button
-            className="gold"
-            onClick={async () => {
-              try {
-                await api("/characters", { method: "POST", body: create });
-                await reload();
-              } catch (e) {
-                setErr(te(e instanceof Error ? e.message : "Denied"));
-              }
-            }}
-          >
-            {t("takeRoad")}
-          </button>
-          {err ? <div className="error">{err}</div> : null}
-          <button
-            style={{ marginTop: 12 }}
-            onClick={async () => {
-              await api("/auth/logout", { method: "POST" });
-              setUser(null);
-            }}
-          >
-            {t("leaveHall")}
-          </button>
-          {game.user.role === "admin" ? (
-            <button style={{ marginTop: 8 }} onClick={() => setMode("admin")}>
-              {t("seneschalHall")}
-            </button>
+          {picked ? (
+            <div className="hall-sheet">
+              <div className="hall-art">
+                <HeroFace icon={picked.icon || picked.portrait} alt={heroName(picked.id)} />
+              </div>
+              <div>
+                <div className="hall-name">{heroName(picked.id)}</div>
+                <p className="muted hall-blurb">{heroBlurb(picked.id)}</p>
+                <ul className="hall-stats">
+                  {HALL_STAT_KEYS.filter((k) => startStats[k]).map((k) => (
+                    <li key={k}>
+                      <span>{t(`stat_${k}`)}</span>
+                      <b>
+                        {Math.round((startStats[k] || 0) * 10) / 10}
+                        {k === "critChance" || k === "dodge" || k === "lifesteal" || k === "luck" ? "%" : ""}
+                        {k === "critDamage" ? "%" : ""}
+                      </b>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           ) : null}
+          <label>{t("name")}</label>
+          <input value={create.name} onChange={(e) => setCreate({ ...create, name: e.target.value })} />
+          <div className="hall-actions">
+            <button
+              className="gold"
+              onClick={async () => {
+                try {
+                  await api("/characters", { method: "POST", body: create });
+                  await reload();
+                } catch (e) {
+                  setErr(te(e instanceof Error ? e.message : "Denied"));
+                }
+              }}
+            >
+              {t("takeRoad")}
+            </button>
+            <button
+              onClick={async () => {
+                await api("/auth/logout", { method: "POST" });
+                setUser(null);
+              }}
+            >
+              {t("leaveHall")}
+            </button>
+            {user.role === "admin" ? (
+              <button onClick={() => setMode("admin")}>{t("seneschalHall")}</button>
+            ) : null}
+          </div>
+          {err ? <div className="error">{err}</div> : null}
         </div>
       </div>
     );
@@ -799,7 +890,7 @@ export default function App() {
           <p className="muted">{t("fallenHint")}</p>
           <div className="parchment" style={{ padding: "1rem", textAlign: "left", margin: "1rem 0" }}>
             <div>
-              <b>{d.character}</b> {t(`class_${d.class}`) || d.class}
+              <b>{d.character}</b> {heroName(String(d.class), String(d.class))}
             </div>
             <div>{t("levelReached", { level: d.level })}</div>
             <div>{t("regionReached", { region: d.region, round: d.round })}</div>
@@ -826,22 +917,13 @@ export default function App() {
     <div className="shell">
       <header className="panel topbar">
         <div className="hero-chip">
-          <img
-            className="hero-portrait"
-            src="/assets/pers/1.png"
-            alt=""
-            onError={(e) => {
-              const el = e.currentTarget;
-              if (!el.dataset.fb) {
-                el.dataset.fb = "1";
-                el.src = "/assets/pers/1.svg";
-              }
-            }}
-          />
+          <div className="hero-portrait">
+            <HeroFace icon={c.classIcon} alt={c.name} />
+          </div>
           <div>
             <div className="hero-name">{c.name}</div>
             <div className="muted hero-class">
-              {t(`class_${c.class}`) || c.class} · {c.level}
+              {heroName(c.class, c.class)} · {c.level}
             </div>
           </div>
         </div>
@@ -895,6 +977,10 @@ export default function App() {
         <aside className="panel left-panel" style={{ display: mobile === "equip" || window.innerWidth > 1100 ? "block" : "none" }}>
               <div className="section-title">{t("characterLabel")}</div>
               <div className="hero-vitals">
+                <div className="hero-level" title={t("levelReached", { level: c.level })}>
+                  <span>{t("lvl")}</span>
+                  <b>{c.level}</b>
+                </div>
                 <div className="hero-bars">
                   <div className="hpbar hero wide">
                     <span style={{ width: `${(displayHp / Math.max(1, maxHp)) * 100}%` }} />
@@ -1299,6 +1385,7 @@ export default function App() {
                   ) : null}
                   <BattleStage
                     playerName={c.name}
+                    playerIcon={c.battleIcon || c.classIcon}
                     playerHp={livePlayerHp}
                     playerMax={fight?.playerMaxHp ?? maxHp}
                     playerDamage={Math.max(
@@ -1842,7 +1929,7 @@ function GuildView({
   onClose: () => void;
   setErr: (s: string) => void;
 }) {
-  const { t, te } = useI18n();
+  const { t, te, heroName } = useI18n();
   const [form, setForm] = useState({ name: "", tag: "", description: "", emblem: "wolf" });
   const [pick, setPick] = useState<string | null>(null);
   const guilds = (list?.guilds as PublicGuild[]) || [];
@@ -1964,7 +2051,7 @@ function GuildView({
               <div className="guild-roster">
                 {roster.length === 0 ? <div className="stall-empty">{t("guildEmpty")}</div> : null}
                 {roster.map((m) => {
-                  const cls = m.character_class ? t(`class_${m.character_class}`) : "";
+                  const cls = m.character_class ? heroName(m.character_class) : "";
                   return (
                     <div key={m.id} className={`guild-member${m.id === userId ? " me" : ""}${m.rank === "leader" ? " lead" : ""}`}>
                       <span className={`guild-rank r-${m.rank}`}>{t(`guildRank_${m.rank}`) || m.rank}</span>

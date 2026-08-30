@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "./i18n";
-import { HoverHint } from "./ui";
+import { HeroFace, HoverHint } from "./ui";
 
 export type BattleFoe = {
   id?: string;
@@ -10,6 +10,7 @@ export type BattleFoe = {
   maxHp: number;
   damage: number;
   armor?: number;
+  icon?: string;
 };
 
 export type BattleAura = {
@@ -39,6 +40,7 @@ type Props = {
   playerHp: number;
   playerMax: number;
   playerDamage?: number;
+  playerIcon?: string;
   playerAura?: BattleAura;
   foeAuras?: Record<string, BattleAura>;
   foes: BattleFoe[];
@@ -213,7 +215,7 @@ function AuraRow({ aura }: { aura?: BattleAura }) {
   );
 }
 
-export function BattleStage({ playerName, playerHp, playerMax, playerDamage, playerAura, foeAuras, foes, inCity, fx }: Props) {
+export function BattleStage({ playerName, playerHp, playerMax, playerDamage, playerIcon, playerAura, foeAuras, foes, inCity, fx }: Props) {
   const { t, enemyName } = useI18n();
   const [pulse, setPulse] = useState<BattleFx | null>(null);
 
@@ -239,9 +241,11 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
           <div className="stub-host">
             <FloatNum fx={pulse} id="player" />
             <div
-              className={`stub player-stub ${playerStriking ? "striking" : ""} ${playerHurt ? "hurt" : ""}`}
+              className={`stub player-stub${playerIcon ? " has-art" : ""} ${playerStriking ? "striking" : ""} ${playerHurt ? "hurt" : ""}`}
               title={playerName}
-            />
+            >
+              <HeroFace icon={playerIcon} alt={playerName} />
+            </div>
           </div>
           <div className="foe-meta">
             {playerDamage != null ? (
@@ -261,7 +265,7 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
             </div>
           </div>
         </div>
-        <div className="battle-side foe-side">
+        <div className={`battle-side foe-side n-${Math.min(3, Math.max(1, foes.length || 1))}${foes.length > 3 ? " n-more" : ""}`}>
           {inCity ? (
             <p className="muted battle-safe">{t("safeGround")}</p>
           ) : !foes.length ? (
@@ -279,7 +283,9 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
                 <div key={`${id}-${i}`} className={`foe-card ${f.hp <= 0 ? "dead" : ""}`}>
                   <div className="stub-host">
                     <FloatNum fx={pulse} id={id} />
-                    <div className={`stub enemy-stub k-${f.kind} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""}`} title={label} />
+                    <div className={`stub enemy-stub k-${f.kind}${f.icon ? " has-art" : ""} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""}`} title={label}>
+                      {f.icon ? <img src={f.icon} alt="" /> : null}
+                    </div>
                   </div>
                   <div className="foe-meta">
                     <div className="foe-strike">

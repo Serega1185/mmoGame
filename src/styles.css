@@ -183,6 +183,30 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   border: 1px solid var(--bronze);
   background: #120c08;
   image-rendering: auto;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.hero-portrait .hero-face {
+  width: 100%;
+  height: 100%;
+}
+.hero-face {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #120c08;
+}
+.hero-face.stub-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(#2a2218, #14100c);
+}
+.hero-face.stub-face svg {
+  width: 58%;
+  height: 58%;
+  opacity: 0.65;
 }
 .hero-name {
   font-family: var(--font-ui);
@@ -304,6 +328,31 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
 .left-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
 .left-tabs button { flex: 1; padding: 0.35rem 0.4rem; font-size: 0.65rem; }
 .hero-vitals { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; overflow: visible; }
+.hero-level {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  padding: 2px 6px;
+  border: 1px solid var(--bronze);
+  background: linear-gradient(#24180f, #16100a);
+  box-shadow: inset 0 0 0 1px #2a1c12;
+}
+.hero-level span {
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  line-height: 1;
+}
+.hero-level b {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  color: var(--gold);
+  line-height: 1.15;
+}
 .hero-bars { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; overflow: visible; }
 .hpbar.hero.wide {
   flex: none;
@@ -314,17 +363,16 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   background: #2a1810;
   border: 1px solid #6a3a22;
 }
-.hpbar.hero.wide > em { padding-right: 42px; }
 .xpbar {
   height: 10px;
   position: relative;
   background: #16120c;
-  border: 1px solid #4a3a22;
+  border: 1px solid #8a6232;
 }
 .xpbar > span {
   display: block;
   height: 100%;
-  background: linear-gradient(#6a8ab8, #3a5a88);
+  background: linear-gradient(#f0d070, #c4a35a);
 }
 .xpbar em {
   position: absolute;
@@ -550,7 +598,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
 .battle-stage {
   position: relative;
   overflow: hidden;
-  min-height: 280px;
+  min-height: 340px;
   background:
     radial-gradient(ellipse at 50% 80%, rgba(80, 20, 18, 0.45), transparent 55%),
     linear-gradient(#1a2830, #14120e 55%, #2a1410);
@@ -564,10 +612,17 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   justify-content: space-between;
   align-items: flex-end;
   gap: 24px;
-  min-height: 200px;
+  min-height: 260px;
 }
 .battle-side { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.foe-side { align-items: flex-end; gap: 14px; }
+.foe-side {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 12px;
+  max-width: 58%;
+}
 .foe-card { display: flex; flex-direction: column; align-items: center; gap: 6px; overflow: visible; transition: opacity 0.55s ease; }
 .foe-card.dead { opacity: 0.4; }
 .stub {
@@ -580,9 +635,47 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   will-change: transform, filter;
 }
 .player-stub { background: linear-gradient(#4a5a68, #2a343c); border-color: #8aa0b0; }
+.player-stub.has-art {
+  width: 175px;
+  height: 175px;
+  padding: 0;
+  overflow: visible;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.player-stub.has-art .hero-face {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: none;
+}
 .enemy-stub { background: linear-gradient(#5a3a28, #2a1810); }
 .enemy-stub.k-elite { background: linear-gradient(#6a4a18, #2a1c08); border-color: var(--gold); }
 .enemy-stub.k-boss { background: linear-gradient(#6a1818, #2a0808); border-color: #c04040; width: 68px; height: 88px; }
+.enemy-stub.has-art {
+  padding: 0;
+  overflow: visible;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.foe-side.n-1 .enemy-stub.has-art { width: 160px; height: 160px; }
+.foe-side.n-1 .enemy-stub.k-boss.has-art { width: 175px; height: 175px; }
+.foe-side.n-2 .enemy-stub.has-art { width: 120px; height: 120px; }
+.foe-side.n-2 .enemy-stub.k-boss.has-art { width: 140px; height: 140px; }
+.foe-side.n-3 .enemy-stub.has-art,
+.foe-side.n-more .enemy-stub.has-art { width: 80px; height: 80px; }
+.enemy-stub img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  background: none;
+}
 .stub.striking.player-stub {
   animation: lunge-player 0.62s cubic-bezier(0.22, 0.82, 0.28, 1);
 }
@@ -659,6 +752,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   width: 88px;
   overflow: visible;
 }
+.player-side .foe-meta { width: 175px; }
 .foe-strike {
   position: absolute;
   right: calc(100% + 4px);
@@ -676,8 +770,8 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   right: auto;
   left: calc(100% + 4px);
 }
-.foe-hp,
-.player-side .foe-hp { width: 88px; overflow: visible; }
+.foe-hp { width: 88px; overflow: visible; }
+.player-side .foe-hp { width: 175px; overflow: visible; }
 .battle-auras {
   display: flex;
   flex-wrap: wrap;
@@ -735,6 +829,10 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   height: 20px;
   border-radius: 7px;
   overflow: hidden;
+}
+.battle-stage .player-side .hpbar {
+  height: 26px;
+  border-radius: 8px;
 }
 .hpbar > span { display: block; height: 100%; background: linear-gradient(#c43030, #6a1010); transition: width 0.55s cubic-bezier(0.22, 0.8, 0.28, 1); }
 .battle-actions { margin-top: 10px; }
@@ -1351,6 +1449,142 @@ main {
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cpath d='M0 40h80M40 0v80' stroke='%23221810' stroke-width='1'/%3E%3C/svg%3E");
 }
 .auth-card { width: min(420px, 100%); padding: 1.5rem; }
+.hall-card { width: min(720px, 100%); padding: 1.35rem 1.5rem 1.5rem; }
+.hall-portraits {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin: 12px 0 14px;
+}
+.hall-slot {
+  aspect-ratio: 3 / 4;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--bronze);
+  background: #120c08;
+  cursor: pointer;
+}
+.hall-slot .hero-face,
+.hall-art .hero-face {
+  width: 100%;
+  height: 100%;
+}
+.hall-slot.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold), 0 0 10px rgba(200, 160, 80, 0.28);
+}
+.hall-sheet {
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  gap: 16px;
+  margin: 4px 0 14px;
+  align-items: start;
+}
+.hall-art {
+  width: 148px;
+  height: 196px;
+  border: 1px solid var(--bronze);
+  background: #120c08;
+  overflow: hidden;
+}
+.hall-name {
+  font-family: var(--font-ui);
+  color: var(--gold);
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+}
+.hall-blurb { margin: 0.35rem 0 0.6rem; line-height: 1.4; }
+.hall-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.86rem;
+}
+.hall-stats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+  border-bottom: 1px solid #2a2218;
+  color: var(--parchment);
+}
+.hall-stats b { color: var(--gold); font-weight: 600; }
+.hall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.admin-hero-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+.admin-hero-thumb {
+  width: 36px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid var(--bronze);
+  background: #120c08;
+}
+.admin-hero-preview {
+  width: 72px;
+  height: 96px;
+}
+.admin-hero-preview .hero-face,
+.admin-hero-thumb .hero-face { width: 100%; height: 100%; }
+.admin-hero-arts { align-items: flex-end; }
+.admin-hero-art-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--bronze);
+  background: transparent;
+  color: inherit;
+}
+.admin-hero-art-slot.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+.admin-hero-art-slot span { font-size: 0.75rem; color: var(--gold); }
+.admin-starter-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.admin-starter-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--bronze);
+  padding: 4px 8px;
+  background: #120c08;
+}
+.admin-starter-list img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+.admin-starter-gap { width: 28px; height: 28px; }
+.admin-starter-list button { margin-left: auto; }
+.admin-starter-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+@media (max-width: 640px) {
+  .hall-sheet { grid-template-columns: 1fr; }
+  .hall-art { width: 100%; height: 220px; }
+  .admin-hero-grid { grid-template-columns: 1fr 1fr; }
+}
 .maint-card { width: min(520px, 100%); padding: 1.6rem 1.5rem; text-align: center; }
 .maint-card h1 { margin-bottom: 0.4rem; }
 .maint-copy {
@@ -1429,6 +1663,30 @@ main {
 .admin-icon-grid { display: flex; flex-wrap: wrap; gap: 6px; max-height: 160px; overflow: auto; }
 .admin-icon-grid button { padding: 4px; }
 .admin-check { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.admin-ability-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 6px;
+}
+.admin-ability-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.admin-ability-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 8px 10px;
+  border: 1px solid #4a3420;
+  background: #16100a;
+}
+.admin-ability-card.on { border-color: var(--bronze); }
+.admin-ability-card label { margin: 0; }
+.admin-ability-card input[type="number"] { width: 72px; }
 .admin-upload input[type="file"] { max-width: 220px; }
 .admin-drops { display: flex; flex-direction: column; gap: 16px; max-width: 980px; }
 .admin-drop-band {

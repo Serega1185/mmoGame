@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, STAT_KEYS } from "./api";
 import { useI18n } from "./i18n";
+import { HeroFace, HoverHint } from "./ui";
 
 const RARITIES = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"] as const;
 const DROP_KINDS = ["normal", "elite", "boss"] as const;
@@ -1045,6 +1046,852 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
   );
 }
 
+const ENEMY_KINDS = ["normal", "elite", "boss"] as const;
+const ENEMY_GLYPHS = ["bandit", "beast", "knight", "undead", "witch", "cultist", "necromancer", "orc"] as const;
+const ENEMY_ABILITIES = ["heavy", "regen", "bleed", "poison", "fire"] as const;
+
+type EnemyLocale = Record<"en" | "ru" | "zh", string>;
+type EnemyPotency = {
+  regen: number;
+  poison: number;
+  poisonChance: number;
+  bleed: number;
+  bleedChance: number;
+  fireDmg: number;
+  fireHits: number;
+  fireChance: number;
+  heavyPct: number;
+};
+type AdminEnemy = {
+  id: string;
+  kind: string;
+  hp: number;
+  damage: number;
+  armor: number;
+  crit_chance: number;
+  dodge: number;
+  abilities: string[];
+  undead: boolean;
+  region: number;
+  glyph: string;
+  icon: string;
+  potency: EnemyPotency;
+  i18n: EnemyLocale;
+};
+
+const EMPTY_POTENCY: EnemyPotency = {
+  regen: 2,
+  poison: 4,
+  poisonChance: 40,
+  bleed: 4,
+  bleedChance: 40,
+  fireDmg: 4,
+  fireHits: 3,
+  fireChance: 30,
+  heavyPct: 20,
+};
+
+const EMPTY_ENEMY: AdminEnemy = {
+  id: "",
+  kind: "normal",
+  hp: 50,
+  damage: 8,
+  armor: 2,
+  crit_chance: 0.05,
+  dodge: 0.03,
+  abilities: [],
+  undead: false,
+  region: 1,
+  glyph: "bandit",
+  icon: "",
+  potency: { ...EMPTY_POTENCY },
+  i18n: { en: "", ru: "", zh: "" },
+};
+
+function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t, te, enemyName, reloadCatalog } = useI18n();
+  const [enemies, setEnemies] = useState<AdminEnemy[]>([]);
+  const [regions, setRegions] = useState<{ id: number; name: string }[]>([]);
+  const [icons, setIcons] = useState<string[]>([]);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<"depth" | "name">("depth");
+  const [edit, setEdit] = useState<AdminEnemy | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [idLocked, setIdLocked] = useState(false);
+
+  const load = useCallback(async () => {
+    const data = await api<{ enemies: AdminEnemy[]; regions: { id: number; name: string }[]; icons: string[] }>("/admin/enemies");
+    setEnemies(data.enemies);
+    setRegions(data.regions || []);
+    setIcons(data.icons || []);
+  }, []);
+
+  useEffect(() => {
+    load().catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
+  }, [load, setErr, te]);
+
+  const shown = enemies
+    .filter((e) => {
+      const blob = [e.id, e.kind, e.glyph, e.i18n.en, e.i18n.ru, e.i18n.zh, enemyName(e.id, e.i18n.en)].join(" ").toLowerCase();
+      return !q.trim() || blob.includes(q.trim().toLowerCase());
+    })
+    .slice()
+    .sort((a, b) =>
+      sort === "name"
+        ? (a.i18n.ru || a.i18n.en || a.id).localeCompare(b.i18n.ru || b.i18n.en || b.id)
+        : a.region - b.region || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id)
+    );
+
+  function patchName(lang: "en" | "ru" | "zh", name: string) {
+    if (!edit) return;
+    setEdit({ ...edit, i18n: { ...edit.i18n, [lang]: name } });
+  }
+
+  function toggleAbility(key: string) {
+    if (!edit) return;
+    const on = edit.abilities.includes(key);
+    setEdit({ ...edit, abilities: on ? edit.abilities.filter((a) => a !== key) : [...edit.abilities, key] });
+  }
+
+  function patchPotency(bit: Partial<EnemyPotency>) {
+    if (!edit) return;
+    setEdit({ ...edit, potency: { ...edit.potency, ...bit } });
+  }
+
+  async function uploadArt(file: File) {
+    if (!edit) return;
+    const data = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || ""));
+      r.onerror = () => reject(new Error("That is not an image."));
+      r.readAsDataURL(file);
+    });
+    const saved = await api<{ path: string }>("/admin/enemies/icon", { method: "POST", body: { data } });
+    setEdit({ ...edit, icon: saved.path });
+    setIcons((prev) => (prev.includes(saved.path) ? prev : [saved.path, ...prev]));
+  }
+
+  async function save() {
+    if (!edit || busy) return;
+    setBusy(true);
+    try {
+      await api("/admin/enemies", {
+        method: "POST",
+        body: {
+          id: edit.id,
+          kind: edit.kind,
+          region: edit.region,
+          glyph: edit.glyph,
+          hp: edit.hp,
+          damage: edit.damage,
+          armor: edit.armor,
+          crit_chance: edit.crit_chance,
+          dodge: edit.dodge,
+          abilities: edit.abilities,
+          undead: edit.undead,
+          icon: edit.icon,
+          potency: edit.potency,
+          names: edit.i18n,
+        },
+      });
+      setNote(t("adminEnemiesSaved"));
+      setIdLocked(true);
+      await load();
+      await reloadCatalog();
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    if (busy) return;
+    if (!confirm(t("adminEnemiesDeleteConfirm", { name: enemyName(id, id) || id }))) return;
+    setBusy(true);
+    try {
+      await api("/admin/enemies/delete", { method: "POST", body: { id } });
+      if (edit?.id === id) setEdit(null);
+      await load();
+      await reloadCatalog();
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="admin-drops" style={{ maxWidth: 1100 }}>
+      <p className="muted">{t("adminEnemiesHint")}</p>
+      <div className="admin-drop-head">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminEnemiesSearch")} />
+        <button className={sort === "depth" ? "gold" : ""} onClick={() => setSort("depth")}>
+          {t("adminEnemiesSortDepth")}
+        </button>
+        <button className={sort === "name" ? "gold" : ""} onClick={() => setSort("name")}>
+          {t("adminEnemiesSortName")}
+        </button>
+        <button
+          className="gold"
+          onClick={() => {
+            setIdLocked(false);
+            setEdit({
+              ...EMPTY_ENEMY,
+              id: `foe_${Date.now().toString(36)}`,
+              region: regions[0]?.id || 1,
+              i18n: { en: "", ru: "", zh: "" },
+              abilities: [],
+              potency: { ...EMPTY_POTENCY },
+              icon: "",
+            });
+          }}
+        >
+          {t("adminEnemiesNew")}
+        </button>
+      </div>
+      {edit ? (
+        <div className="admin-drop-band admin-item-form">
+          <div className="admin-stats-grid">
+            <label>
+              id
+              <input value={edit.id} disabled={idLocked} onChange={(e) => setEdit({ ...edit, id: e.target.value })} />
+            </label>
+            <label>
+              {t("adminEnemiesKind")}
+              <select value={edit.kind} onChange={(e) => setEdit({ ...edit, kind: e.target.value })}>
+                {ENEMY_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {t(`adminDropsKind${k[0].toUpperCase()}${k.slice(1)}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t("adminEnemiesDepth")}
+              <select value={edit.region} onChange={(e) => setEdit({ ...edit, region: Number(e.target.value) })}>
+                {regions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t("adminEnemiesGlyph")}
+              <select value={edit.glyph} onChange={(e) => setEdit({ ...edit, glyph: e.target.value })}>
+                {ENEMY_GLYPHS.map((g) => (
+                  <option key={g} value={g}>
+                    {t(`adminGlyph_${g}`)}
+                  </option>
+                ))}
+                {!ENEMY_GLYPHS.includes(edit.glyph as (typeof ENEMY_GLYPHS)[number]) ? (
+                  <option value={edit.glyph}>{edit.glyph}</option>
+                ) : null}
+              </select>
+            </label>
+            <label>
+              {t("adminEnemiesHp")}
+              <input type="number" min={1} value={edit.hp} onChange={(e) => setEdit({ ...edit, hp: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })} />
+            </label>
+            <label>
+              {t("adminEnemiesDamage")}
+              <input type="number" min={0} value={edit.damage} onChange={(e) => setEdit({ ...edit, damage: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })} />
+            </label>
+            <label>
+              {t("adminEnemiesArmor")}
+              <input type="number" min={0} value={edit.armor} onChange={(e) => setEdit({ ...edit, armor: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })} />
+            </label>
+            <label>
+              {t("adminEnemiesCrit")}
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.5}
+                value={Math.round(edit.crit_chance * 1000) / 10}
+                onChange={(e) => setEdit({ ...edit, crit_chance: Math.min(1, Math.max(0, Number(e.target.value) / 100)) })}
+              />
+            </label>
+            <label>
+              {t("adminEnemiesDodge")}
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.5}
+                value={Math.round(edit.dodge * 1000) / 10}
+                onChange={(e) => setEdit({ ...edit, dodge: Math.min(1, Math.max(0, Number(e.target.value) / 100)) })}
+              />
+            </label>
+            <HoverHint as="span" className="admin-check" title={t("adminEnemiesUndead")} text={t("adminAbilityTip_undead")}>
+              <label className="admin-check">
+                <input type="checkbox" checked={edit.undead} onChange={(e) => setEdit({ ...edit, undead: e.target.checked })} />
+                {t("adminEnemiesUndead")}
+              </label>
+            </HoverHint>
+          </div>
+          <div>
+            <div className="muted">{t("adminEnemiesAbilities")}</div>
+            <div className="admin-ability-list">
+              {ENEMY_ABILITIES.map((a) => {
+                const on = edit.abilities.includes(a);
+                return (
+                  <div key={a} className={`admin-ability-card${on ? " on" : ""}`}>
+                    <HoverHint as="span" title={t(`adminAbility_${a}`)} text={t(`adminAbilityTip_${a}`)}>
+                      <label className="admin-check">
+                        <input type="checkbox" checked={on} onChange={() => toggleAbility(a)} />
+                        {t(`adminAbility_${a}`)}
+                      </label>
+                    </HoverHint>
+                    {on && a === "heavy" ? (
+                      <label>
+                        {t("adminAbilityHeavy")}
+                        <input
+                          type="number"
+                          min={0}
+                          value={edit.potency.heavyPct}
+                          onChange={(e) => patchPotency({ heavyPct: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                      </label>
+                    ) : null}
+                    {on && a === "regen" ? (
+                      <label>
+                        {t("adminAbilityPotency")}
+                        <input
+                          type="number"
+                          min={0}
+                          value={edit.potency.regen}
+                          onChange={(e) => patchPotency({ regen: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                      </label>
+                    ) : null}
+                    {on && a === "bleed" ? (
+                      <>
+                        <label>
+                          {t("adminAbilityPotency")}
+                          <input
+                            type="number"
+                            min={0}
+                            value={edit.potency.bleed}
+                            onChange={(e) => patchPotency({ bleed: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </label>
+                        <label>
+                          {t("adminAbilityChance")}
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={edit.potency.bleedChance}
+                            onChange={(e) => patchPotency({ bleedChance: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                    {on && a === "poison" ? (
+                      <>
+                        <label>
+                          {t("adminAbilityPotency")}
+                          <input
+                            type="number"
+                            min={0}
+                            value={edit.potency.poison}
+                            onChange={(e) => patchPotency({ poison: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </label>
+                        <label>
+                          {t("adminAbilityChance")}
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={edit.potency.poisonChance}
+                            onChange={(e) => patchPotency({ poisonChance: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                    {on && a === "fire" ? (
+                      <>
+                        <label>
+                          {t("adminAbilityPotency")}
+                          <input
+                            type="number"
+                            min={0}
+                            value={edit.potency.fireDmg}
+                            onChange={(e) => patchPotency({ fireDmg: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </label>
+                        <label>
+                          {t("adminAbilityHits")}
+                          <input
+                            type="number"
+                            min={1}
+                            value={edit.potency.fireHits}
+                            onChange={(e) => patchPotency({ fireHits: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })}
+                          />
+                        </label>
+                        <label>
+                          {t("adminAbilityChance")}
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={edit.potency.fireChance}
+                            onChange={(e) => patchPotency({ fireChance: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="admin-icon-row">
+            <div className="admin-icon-preview">
+              {edit.icon ? <img src={edit.icon} alt="" /> : <span className="muted">{t("adminEnemiesNoArt")}</span>}
+            </div>
+            <label>
+              {t("adminEnemiesArt")}
+              <input value={edit.icon} onChange={(e) => setEdit({ ...edit, icon: e.target.value })} placeholder="/assets/mob/..." />
+            </label>
+            <label className="admin-upload">
+              {t("adminItemsUpload")}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void uploadArt(f).catch((err) => setErr(te(err instanceof Error ? err.message : "Denied")));
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {icons.length ? (
+            <div className="admin-icon-grid">
+              {icons.map((src) => (
+                <button
+                  key={src}
+                  type="button"
+                  className={edit.icon === src ? "gold" : ""}
+                  title={src}
+                  onClick={() => setEdit({ ...edit, icon: src })}
+                >
+                  <img src={src} alt="" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="admin-i18n">
+            {(["en", "ru", "zh"] as const).map((lang) => (
+              <div key={lang} className="admin-i18n-col">
+                <div className="muted">{lang.toUpperCase()}</div>
+                <label>
+                  {t("adminItemsName")}
+                  <input value={edit.i18n[lang]} onChange={(e) => patchName(lang, e.target.value)} />
+                </label>
+              </div>
+            ))}
+          </div>
+          <div className="admin-drop-actions">
+            <button className="gold" disabled={busy} onClick={() => void save()}>
+              {t("adminDropsSave")}
+            </button>
+            <button disabled={busy} onClick={() => setEdit(null)}>
+              {t("closeMap")}
+            </button>
+            {note ? <span className="muted">{note}</span> : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="admin-table-wrap">
+        <table className="board-table admin-table">
+          <thead>
+            <tr>
+              <th>{t("name")}</th>
+              <th>{t("adminEnemiesKind")}</th>
+              <th>{t("adminEnemiesDepth")}</th>
+              <th>{t("adminEnemiesHp")}</th>
+              <th>{t("adminEnemiesDamage")}</th>
+              <th>{t("adminActions")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((e) => (
+              <tr key={e.id}>
+                <td>
+                  {enemyName(e.id, e.i18n.ru || e.i18n.en) || e.i18n.ru || e.i18n.en}
+                  <div className="muted">{e.id}</div>
+                </td>
+                <td>{t(`adminDropsKind${e.kind[0]!.toUpperCase()}${e.kind.slice(1)}`)}</td>
+                <td>{e.region}</td>
+                <td>{e.hp}</td>
+                <td>{e.damage}</td>
+                <td>
+                  <div className="admin-actions">
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        setIdLocked(true);
+                        setEdit({
+                          ...e,
+                          i18n: { en: e.i18n?.en || "", ru: e.i18n?.ru || "", zh: e.i18n?.zh || "" },
+                          abilities: (e.abilities || []).filter((a) => a !== "strike" && a !== "undead"),
+                          icon: e.icon || "",
+                          potency: { ...EMPTY_POTENCY, ...(e.potency || {}) },
+                        });
+                      }}
+                    >
+                      {t("adminItemsEdit")}
+                    </button>
+                    <button className="danger" disabled={busy} onClick={() => void remove(e.id)}>
+                      {t("adminItemsDelete")}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+type AdminHero = {
+  id: string;
+  sort: number;
+  health: number;
+  damage: number;
+  armor: number;
+  critChance: number;
+  critDamage: number;
+  dodge: number;
+  lifesteal: number;
+  luck: number;
+  magicDamage: number;
+  pass: Record<string, number>;
+  icon: string;
+  portrait: string;
+  starters: string[];
+  i18n: Record<"en" | "ru" | "zh", { name: string; blurb: string }>;
+};
+
+const HERO_PASS_KEYS = ["armor", "healthPct", "critChance", "dodge", "luck", "lifesteal", "regen", "damage"] as const;
+
+function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t, te, heroName, itemName, reloadCatalog } = useI18n();
+  const [heroes, setHeroes] = useState<AdminHero[]>([]);
+  const [icons, setIcons] = useState<string[]>([]);
+  const [kitItems, setKitItems] = useState<AdminItem[]>([]);
+  const [itemQ, setItemQ] = useState("");
+  const [edit, setEdit] = useState<AdminHero | null>(null);
+  const [artPick, setArtPick] = useState<"icon" | "portrait">("icon");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = useCallback(async () => {
+    const data = await api<{ heroes: AdminHero[]; icons: string[]; items: AdminItem[] }>("/admin/heroes");
+    setHeroes(data.heroes.map((h) => ({ ...h, starters: h.starters || [], portrait: h.portrait || "" })));
+    setIcons(data.icons || []);
+    setKitItems(data.items || []);
+  }, []);
+
+  useEffect(() => {
+    load().catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
+  }, [load, setErr, te]);
+
+  function patchNum(key: keyof AdminHero, value: number) {
+    if (!edit) return;
+    setEdit({ ...edit, [key]: value });
+    setNote("");
+  }
+
+  function patchPass(key: string, value: number) {
+    if (!edit) return;
+    setEdit({ ...edit, pass: { ...edit.pass, [key]: value } });
+    setNote("");
+  }
+
+  function patchLocale(lang: "en" | "ru" | "zh", bit: Partial<{ name: string; blurb: string }>) {
+    if (!edit) return;
+    setEdit({ ...edit, i18n: { ...edit.i18n, [lang]: { ...edit.i18n[lang], ...bit } } });
+    setNote("");
+  }
+
+  async function uploadArt(file: File) {
+    if (!edit) return;
+    const data = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || ""));
+      r.onerror = () => reject(new Error("That is not an image."));
+      r.readAsDataURL(file);
+    });
+    const saved = await api<{ path: string }>("/admin/heroes/icon", { method: "POST", body: { data } });
+    setEdit({ ...edit, [artPick]: saved.path });
+    setIcons((prev) => (prev.includes(saved.path) ? prev : [saved.path, ...prev]));
+  }
+
+  async function save() {
+    if (!edit || busy) return;
+    setBusy(true);
+    try {
+      const names: Record<string, string> = {};
+      const blurbs: Record<string, string> = {};
+      for (const lang of ["en", "ru", "zh"] as const) {
+        names[lang] = edit.i18n[lang].name;
+        blurbs[lang] = edit.i18n[lang].blurb;
+      }
+      await api("/admin/heroes", {
+        method: "POST",
+        body: {
+          id: edit.id,
+          health: edit.health,
+          damage: edit.damage,
+          armor: edit.armor,
+          critChance: edit.critChance,
+          critDamage: edit.critDamage,
+          dodge: edit.dodge,
+          lifesteal: edit.lifesteal,
+          luck: edit.luck,
+          magicDamage: edit.magicDamage,
+          pass: edit.pass,
+          icon: edit.icon,
+          portrait: edit.portrait || "",
+          starters: edit.starters || [],
+          names,
+          blurbs,
+        },
+      });
+      setNote(t("adminHeroesSaved"));
+      await load();
+      await reloadCatalog();
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="admin-drops" style={{ maxWidth: 1100 }}>
+      <p className="muted">{t("adminHeroesHint")}</p>
+      {edit ? (
+        <div className="admin-item-edit">
+          <div className="admin-icon-row admin-hero-arts">
+            <button
+              type="button"
+              className={`admin-hero-art-slot${artPick === "portrait" ? " on" : ""}`}
+              onClick={() => setArtPick("portrait")}
+            >
+              <div className="admin-icon-preview hall-art admin-hero-preview">
+                <HeroFace icon={edit.portrait} alt={heroName(edit.id)} />
+              </div>
+              <span>{t("adminHeroesPortrait")}</span>
+            </button>
+            <button
+              type="button"
+              className={`admin-hero-art-slot${artPick === "icon" ? " on" : ""}`}
+              onClick={() => setArtPick("icon")}
+            >
+              <div className="admin-icon-preview hall-art admin-hero-preview">
+                <HeroFace icon={edit.icon} alt={heroName(edit.id)} />
+              </div>
+              <span>{t("adminHeroesBattleArt")}</span>
+            </button>
+            <label>
+              {artPick === "portrait" ? t("adminHeroesPortrait") : t("adminHeroesBattleArt")}
+              <input
+                value={artPick === "portrait" ? edit.portrait : edit.icon}
+                onChange={(e) => {
+                  setEdit({ ...edit, [artPick]: e.target.value });
+                  setNote("");
+                }}
+                placeholder="/assets/pers/..."
+              />
+            </label>
+            <label className="admin-upload">
+              {t("adminItemsUpload")}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void uploadArt(f).catch((err) => setErr(te(err instanceof Error ? err.message : "Denied")));
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {icons.length ? (
+            <div className="admin-icon-grid">
+              {icons.map((src) => (
+                <button
+                  key={src}
+                  type="button"
+                  className={(artPick === "portrait" ? edit.portrait : edit.icon) === src ? "gold" : ""}
+                  title={src}
+                  onClick={() => { setEdit({ ...edit, [artPick]: src }); setNote(""); }}
+                >
+                  <img src={src} alt="" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="admin-i18n">
+            {(["en", "ru", "zh"] as const).map((lang) => (
+              <div key={lang} className="admin-i18n-col">
+                <div className="muted">{lang.toUpperCase()}</div>
+                <label>
+                  {t("adminItemsName")}
+                  <input value={edit.i18n[lang].name} onChange={(e) => patchLocale(lang, { name: e.target.value })} />
+                </label>
+                <label>
+                  {t("adminHeroesBlurb")}
+                  <input value={edit.i18n[lang].blurb} onChange={(e) => patchLocale(lang, { blurb: e.target.value })} />
+                </label>
+              </div>
+            ))}
+          </div>
+          <div className="admin-hero-grid">
+            {([
+              ["health", edit.health],
+              ["damage", edit.damage],
+              ["magicDamage", edit.magicDamage],
+              ["armor", edit.armor],
+              ["critChance", edit.critChance],
+              ["critDamage", edit.critDamage],
+              ["dodge", edit.dodge],
+              ["lifesteal", edit.lifesteal],
+              ["luck", edit.luck],
+            ] as const).map(([key, value]) => (
+              <label key={key}>
+                {t(`stat_${key}`)}
+                <input
+                  type="number"
+                  value={value}
+                  onChange={(e) => patchNum(key, Number(e.target.value))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="muted" style={{ marginTop: 8 }}>{t("adminHeroesPass")}</div>
+          <div className="admin-hero-grid">
+            {HERO_PASS_KEYS.map((key) => (
+              <label key={key}>
+                {key === "healthPct" ? t("adminHeroesHealthPct") : t(`stat_${key}`)}
+                <input
+                  type="number"
+                  value={edit.pass[key] || 0}
+                  onChange={(e) => patchPass(key, Number(e.target.value))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="muted" style={{ marginTop: 12 }}>{t("adminHeroesStarters")}</div>
+          {edit.starters?.length ? (
+            <ul className="admin-starter-list">
+              {edit.starters.map((id) => {
+                const it = kitItems.find((x) => x.id === id);
+                return (
+                  <li key={id}>
+                    {it?.icon ? <img src={it.icon} alt="" /> : <span className="admin-starter-gap" />}
+                    <span>{itemName(id) || it?.i18n.ru.name || it?.i18n.en.name || id}</span>
+                    <button type="button" disabled={busy} onClick={() => { setEdit({ ...edit, starters: edit.starters.filter((x) => x !== id) }); setNote(""); }}>
+                      {t("adminHeroesRemoveItem")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="muted">{t("adminHeroesNoStarters")}</p>
+          )}
+          <input
+            value={itemQ}
+            onChange={(e) => setItemQ(e.target.value)}
+            placeholder={t("adminHeroesSearchItems")}
+          />
+          {itemQ.trim() ? (
+            <div className="admin-starter-pick">
+              {kitItems
+                .filter((it) => {
+                  if (edit.starters.includes(it.id)) return false;
+                  const blob = [it.id, it.i18n.en.name, it.i18n.ru.name, it.i18n.zh.name, itemName(it.id)].join(" ").toLowerCase();
+                  return blob.includes(itemQ.trim().toLowerCase());
+                })
+                .slice(0, 12)
+                .map((it) => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    disabled={busy || (edit.starters || []).length >= 16}
+                    onClick={() => {
+                      setEdit({ ...edit, starters: [...(edit.starters || []), it.id] });
+                      setItemQ("");
+                      setNote("");
+                    }}
+                  >
+                    {t("adminHeroesAddItem")} · {itemName(it.id) || it.i18n.ru.name || it.i18n.en.name || it.id}
+                  </button>
+                ))}
+            </div>
+          ) : null}
+          <div className="admin-drop-actions">
+            <button className="gold" disabled={busy} onClick={() => void save()}>
+              {t("adminDropsSave")}
+            </button>
+            <button disabled={busy} onClick={() => setEdit(null)}>
+              {t("closeMap")}
+            </button>
+            {note ? <span className="muted">{note}</span> : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="admin-table-wrap">
+        <table className="board-table admin-table">
+          <thead>
+            <tr>
+              <th />
+              <th>{t("name")}</th>
+              <th>{t("stat_health")}</th>
+              <th>{t("stat_damage")}</th>
+              <th>{t("stat_armor")}</th>
+              <th>{t("stat_critChance")}</th>
+              <th>{t("adminActions")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {heroes.map((h) => (
+              <tr key={h.id} className={edit?.id === h.id ? "on" : ""}>
+                <td>
+                  <div className="admin-hero-thumb">
+                    <HeroFace icon={h.portrait || h.icon} alt={heroName(h.id)} />
+                  </div>
+                </td>
+                <td>{heroName(h.id, h.i18n.ru?.name || h.i18n.en.name)}</td>
+                <td>{h.health}</td>
+                <td>{h.damage}</td>
+                <td>{h.armor}</td>
+                <td>{h.critChance}</td>
+                <td>
+                  <button type="button" onClick={() => { setEdit({ ...h, starters: h.starters || [], portrait: h.portrait || "" }); setNote(""); setItemQ(""); setArtPick("icon"); }}>
+                    {t("adminItemsEdit")}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function GatePanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te } = useI18n();
   const [version, setVersion] = useState("");
@@ -1119,10 +1966,10 @@ export function AdminView({
   reload: () => Promise<void>;
   setErr: (s: string) => void;
 }) {
-  const { t, te } = useI18n();
-  const [tab, setTab] = useState<"wayfarers" | "guilds" | "drops" | "shop" | "packs" | "mines" | "items" | "gate">(
-    "wayfarers"
-  );
+  const { t, te, heroName } = useI18n();
+  const [tab, setTab] = useState<
+    "wayfarers" | "guilds" | "drops" | "shop" | "packs" | "mines" | "items" | "enemies" | "heroes" | "gate"
+  >("wayfarers");
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [guilds, setGuilds] = useState<GuildRow[]>([]);
   const [amounts, setAmounts] = useState<Record<string, string>>({});
@@ -1184,6 +2031,12 @@ export function AdminView({
         <button className={tab === "items" ? "gold" : ""} onClick={() => setTab("items")}>
           {t("adminTabItems")}
         </button>
+        <button className={tab === "enemies" ? "gold" : ""} onClick={() => setTab("enemies")}>
+          {t("adminTabEnemies")}
+        </button>
+        <button className={tab === "heroes" ? "gold" : ""} onClick={() => setTab("heroes")}>
+          {t("adminTabHeroes")}
+        </button>
         <button className={tab === "gate" ? "gold" : ""} onClick={() => setTab("gate")}>
           {t("adminTabGate")}
         </button>
@@ -1201,6 +2054,10 @@ export function AdminView({
         <MinesPanel setErr={setErr} />
       ) : tab === "items" ? (
         <ItemsPanel setErr={setErr} />
+      ) : tab === "enemies" ? (
+        <EnemiesPanel setErr={setErr} />
+      ) : tab === "heroes" ? (
+        <HeroesPanel setErr={setErr} />
       ) : tab === "wayfarers" ? (
         <div className="admin-table-wrap">
           <table className="board-table admin-table">
@@ -1225,7 +2082,7 @@ export function AdminView({
                   </td>
                   <td>{row.character_name || t("adminNoCharacter")}</td>
                   <td>
-                    {row.character_class ? t(`class_${row.character_class}`) || row.character_class : "—"}
+                    {row.character_class ? heroName(row.character_class, row.character_class) : "—"}
                   </td>
                   <td>{row.level ?? "—"}</td>
                   <td>{row.region != null ? `${row.region} · ${row.round}` : "—"}</td>

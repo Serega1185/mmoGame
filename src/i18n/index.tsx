@@ -7,6 +7,9 @@ const KEY = "ashmarch-lang";
 
 type LocaleBit = { name: string; flavor: string };
 type ItemCatalog = Record<string, Record<Lang, LocaleBit>>;
+type EnemyCatalog = Record<string, Record<Lang, string>>;
+type HeroLocale = { name: string; blurb: string };
+type HeroCatalog = Record<string, Record<Lang, HeroLocale>>;
 
 function interp(s: string, vars?: Record<string, string | number>) {
   if (!vars) return s;
@@ -36,6 +39,8 @@ type Ctx = {
   regionTheme: (id: number, fallback?: string) => string;
   regionDesc: (id: number, fallback?: string) => string;
   enemyName: (id: string | undefined, fallback?: string) => string;
+  heroName: (id: string | undefined, fallback?: string) => string;
+  heroBlurb: (id: string | undefined, fallback?: string) => string;
   combatLine: (line: { key?: string; vars?: Record<string, string | number>; text: string }) => string;
   reloadCatalog: () => Promise<void>;
 };
@@ -45,6 +50,8 @@ const I18nCtx = createContext<Ctx | null>(null);
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(readLang);
   const [catalog, setCatalog] = useState<ItemCatalog>({});
+  const [enemies, setEnemies] = useState<EnemyCatalog>({});
+  const [heroes, setHeroes] = useState<HeroCatalog>({});
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : lang;
@@ -54,9 +61,19 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
   const reloadCatalog = async () => {
     try {
-      const res = await fetch("/api/catalog/items", { credentials: "include" });
-      const data = (await res.json()) as { items?: ItemCatalog };
-      setCatalog(data.items || {});
+      const [itemsRes, enemiesRes, heroesRes] = await Promise.all([
+        fetch("/api/catalog/items", { credentials: "include" }),
+        fetch("/api/catalog/enemies", { credentials: "include" }),
+        fetch("/api/catalog/heroes", { credentials: "include" }),
+      ]);
+      const itemsData = (await itemsRes.json()) as { items?: ItemCatalog };
+      const enemiesData = (await enemiesRes.json()) as { enemies?: EnemyCatalog };
+      const heroesData = (await heroesRes.json()) as { heroes?: { id: string; i18n: Record<Lang, HeroLocale> }[] };
+      setCatalog(itemsData.items || {});
+      setEnemies(enemiesData.enemies || {});
+      const nextHeroes: HeroCatalog = {};
+      for (const h of heroesData.heroes || []) nextHeroes[h.id] = h.i18n;
+      setHeroes(nextHeroes);
     } catch {
       /* keep lore fallback */
     }
@@ -81,7 +98,15 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     };
     const enemyName = (id: string | undefined, fallback = "") => {
       if (!id || id === "player") return fallback;
-      return ENEMIES[id]?.[lang] || fallback;
+      return enemies[id]?.[lang] || enemies[id]?.en || ENEMIES[id]?.[lang] || fallback;
+    };
+    const heroName = (id: string | undefined, fallback = "") => {
+      if (!id) return fallback;
+      return heroes[id]?.[lang]?.name || heroes[id]?.en?.name || t(`class_${id}`) || fallback || id;
+    };
+    const heroBlurb = (id: string | undefined, fallback = "") => {
+      if (!id) return fallback;
+      return heroes[id]?.[lang]?.blurb || heroes[id]?.en?.blurb || t(`blurb_${id}`) || fallback;
     };
     const combatant = (id: string | undefined, name: string) => enemyName(String(id), name) || name;
     return {
@@ -109,6 +134,8 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       regionTheme: (id, fallback = "") => REGIONS[id]?.theme[lang] || fallback,
       regionDesc: (id, fallback = "") => REGIONS[id]?.desc[lang] || fallback,
       enemyName,
+      heroName,
+      heroBlurb,
       combatLine: (line) => {
         if (!line.key) return line.text;
         const vars = { ...(line.vars || {}) };
@@ -122,7 +149,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       },
       reloadCatalog,
     };
-  }, [lang, catalog]);
+  }, [lang, catalog, enemies, heroes]);
 
   return <I18nCtx.Provider value={api}>{children}</I18nCtx.Provider>;
 }

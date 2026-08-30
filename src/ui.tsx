@@ -220,6 +220,26 @@ export function SetTooltip({ set: s, x, y }: { set: SetTip; x: number; y: number
   );
 }
 
+export function HeroFace({ icon, alt = "", className = "" }: { icon?: string; alt?: string; className?: string }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [icon]);
+  const src = icon && !broken ? icon : "";
+  if (!src) {
+    return (
+      <div className={`hero-face stub-face ${className}`.trim()} title={alt || undefined} aria-hidden={!alt}>
+        <svg viewBox="0 0 48 64" fill="none" stroke="#8a7a58" strokeWidth="1.6" aria-hidden>
+          <circle cx="24" cy="16" r="8" />
+          <path d="M10 58 C10 38 38 38 38 58" />
+          <path d="M18 28 L14 44 M30 28 L34 44" />
+        </svg>
+      </div>
+    );
+  }
+  return <img className={`hero-face ${className}`.trim()} src={src} alt={alt} onError={() => setBroken(true)} />;
+}
+
 export function ItemFace({ item }: { item: Item }) {
   const { t, itemName } = useI18n();
   const name = itemName(item);

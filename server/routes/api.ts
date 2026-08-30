@@ -19,6 +19,14 @@ api.get("/catalog/items", (_req, res) => {
   res.json({ items: game.itemCatalog() });
 });
 
+api.get("/catalog/enemies", (_req, res) => {
+  res.json({ enemies: game.enemyCatalog() });
+});
+
+api.get("/catalog/heroes", (_req, res) => {
+  res.json({ heroes: game.heroRoster() });
+});
+
 api.use((req, res, next) => {
   if (!loadGate().maintenance) return next();
   if (req.user?.role === "admin") return next();
@@ -643,6 +651,18 @@ api.post("/admin/items/icon", requireAuth, requireAdmin, (req, res) => {
   res.json(r);
 });
 
+api.post("/admin/heroes/icon", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveHeroIcon(String(req.body?.data || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.post("/admin/enemies/icon", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveMobIcon(String(req.body?.data || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
 api.post("/admin/items/delete", requireAuth, requireAdmin, (req, res) => {
   const r = game.adminDeleteItemDef(String(req.body?.id || ""));
   if (r.error) return res.status(400).json({ error: r.error });
@@ -657,26 +677,28 @@ api.post("/admin/gate", requireAuth, requireAdmin, (req, res) => {
   res.json(game.adminSaveGate(req.body));
 });
 
-api.post("/admin/enemy", requireAuth, requireAdmin, (req, res) => {
-  const b = req.body || {};
-  db.prepare(
-    `INSERT INTO enemies (id,name,kind,hp,damage,armor,crit_chance,attack_speed,dodge,abilities,loot_table,region,glyph)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(id) DO UPDATE SET name=excluded.name, hp=excluded.hp, damage=excluded.damage, armor=excluded.armor`
-  ).run(
-    b.id || newId(),
-    b.name,
-    b.kind || "normal",
-    Number(b.hp || 50),
-    Number(b.damage || 8),
-    Number(b.armor || 2),
-    Number(b.crit_chance || 0.05),
-    Number(b.attack_speed || 1),
-    Number(b.dodge || 0.03),
-    JSON.stringify(b.abilities || ["strike"]),
-    JSON.stringify(b.loot_table || {}),
-    Number(b.region || 1),
-    b.glyph || "bandit"
-  );
-  res.json({ ok: true });
+api.get("/admin/enemies", requireAuth, requireAdmin, (_req, res) => {
+  res.json({ enemies: game.adminEnemyDefs(), regions: game.adminRegions(), icons: game.adminMobIcons() });
+});
+
+api.post("/admin/enemies", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveEnemy(req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.post("/admin/enemies/delete", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminDeleteEnemy(String(req.body?.id || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.get("/admin/heroes", requireAuth, requireAdmin, (_req, res) => {
+  res.json({ heroes: game.heroRoster(), icons: game.adminHeroIcons(), items: game.adminItemDefs() });
+});
+
+api.post("/admin/heroes", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveHero(req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
 });
