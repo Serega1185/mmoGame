@@ -184,7 +184,8 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
   const firstLiving = () => living()[0];
 
   function hitOne(att: Unit, def: Unit, incoming: number, physical: boolean) {
-    if (def.hp <= 0 || att.hp <= 0) return 0;
+    const miss = { hpHit: 0, thorns: null as { att: Unit; def: Unit; th: number } | null };
+    if (def.hp <= 0 || att.hp <= 0) return miss;
     let dmgIn = incoming;
     if (def.talents.has("veteran") && def.hp / def.maxHp > 0.8) dmgIn *= 0.95;
     const dodge =
@@ -198,9 +199,11 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
           attId: att.id || att.name,
           defId: def.id || def.name,
           dealt: 0,
+          armor: def.armorPool,
+          barrier: def.barrier,
         })
       );
-      return 0;
+      return miss;
     }
     if (def.barrier > 0) {
       def.barrier -= 1;
@@ -212,9 +215,11 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
           attId: att.id || att.name,
           defId: def.id || def.name,
           dealt: 0,
+          armor: def.armorPool,
+          barrier: def.barrier,
         })
       );
-      return 0;
+      return miss;
     }
     const hadArmor = def.armorPool > 0;
     const { hpHit, soak } = applyRaw(def, dmgIn);
@@ -223,7 +228,10 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       def.barrier += 1;
       log.push(line(tick, "combat.barrier", { name: def.name, id: def.id || def.name, left: def.barrier }));
     }
-    if (hpHit > 0) {
+    if (hpHit > 0 || soak > 0) {
+      if (soak > 0) {
+        log.push(line(tick, "combat.armor", { name: def.name, id: def.id || def.name, n: soak, left: def.armorPool }));
+      }
       log.push(
         line(tick, "combat.strike", {
           att: att.name,
@@ -231,35 +239,20 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
           attId: att.id || att.name,
           defId: def.id || def.name,
           dealt: hpHit,
-        })
-      );
-    } else if (soak > 0) {
-      log.push(line(tick, "combat.armor", { name: def.name, n: soak }));
-      log.push(
-        line(tick, "combat.strike", {
-          att: att.name,
-          def: def.name,
-          attId: att.id || att.name,
-          defId: def.id || def.name,
-          dealt: 0,
+          soak,
+          armor: def.armorPool,
+          barrier: def.barrier,
         })
       );
     }
+    let thorns: { att: Unit; def: Unit; th: number } | null = null;
     if (physical && def.thorns > 0 && att.hp > 0) {
       const th = def.thorns;
       def.thorns -= 1;
       att.hp -= th;
-      log.push(
-        line(tick, "combat.thorns", {
-          att: att.name,
-          attId: att.id || att.name,
-          def: def.name,
-          dmg: th,
-          left: def.thorns,
-        })
-      );
+      thorns = { att, def, th };
     }
-    return hpHit;
+    return { hpHit, thorns };
   }
 
   function applyOnHit(att: Unit, def: Unit) {
@@ -277,7 +270,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
     if (att.magicSchool === "fire" && Math.random() < 0.3) {
       def.burnHits = 3;
       def.burnDmg = Math.max(1, Math.round((att.stats.magicDamage || 0) * 0.3));
-      log.push(line(tick, "combat.burn", { name: def.name, id: def.id || def.name }));
+      log.push(line(tick, "combat.burn", { name: def.name, id: def.id || def.name, n: def.burnHits }));
     }
     if (att.magicSchool === "frost" && Math.random() < 0.3) {
       def.frozen = true;
@@ -309,47 +302,72 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
     }
 
     let totalHp = 0;
+    const thornHits: { att: Unit; def: Unit; th: number }[] = [];
     for (const { u, portion } of targets) {
       if (portion <= 0 || u.hp <= 0) continue;
-      totalHp += hitOne(att, u, Math.max(1, Math.round(base * portion)), physical);
+      const hit = hitOne(att, u, Math.max(1, Math.round(base * portion)), physical);
+      totalHp += hit.hpHit;
+      if (hit.thorns) thornHits.push(hit.thorns);
     }
     applyOnHit(att, primary);
-    if (crit && att.talents.has("bloodlust") && att.hp > 0) {
-      const heal = Math.max(1, Math.round(att.maxHp * 0.02));
-      att.hp = Math.min(att.maxHp, att.hp + heal);
-      log.push(line(tick, "combat.leech", { att: att.name, attId: att.id || att.name, ls: heal }));
+    for (const t of thornHits) {
+      log.push(
+        line(tick, "combat.thorns", {
+          att: t.att.name,
+          attId: t.att.id || t.att.name,
+          def: t.def.name,
+          defId: t.def.id || t.def.name,
+          dmg: t.th,
+          left: t.def.thorns,
+        })
+      );
     }
-    const ls = Math.round(totalHp * (att.stats.lifesteal || 0) / 100);
-    if (ls > 0 && att.hp > 0) {
-      att.hp = Math.min(att.maxHp, att.hp + ls);
-      log.push(line(tick, "combat.leech", { att: att.name, attId: att.id || att.name, ls }));
+    if (crit && att.talents.has("bloodlust") && att.hp > 0) {
+      const wanted = Math.max(1, Math.round(att.maxHp * 0.02));
+      const before = att.hp;
+      att.hp = Math.min(att.maxHp, att.hp + wanted);
+      const heal = Math.round(att.hp - before);
+      if (heal > 0) log.push(line(tick, "combat.leech", { att: att.name, attId: att.id || att.name, ls: heal }));
+    }
+    const lsWanted = Math.round(totalHp * (att.stats.lifesteal || 0) / 100);
+    if (lsWanted > 0 && att.hp > 0) {
+      const before = att.hp;
+      att.hp = Math.min(att.maxHp, att.hp + lsWanted);
+      const ls = Math.round(att.hp - before);
+      if (ls > 0) log.push(line(tick, "combat.leech", { att: att.name, attId: att.id || att.name, ls }));
     }
   }
 
   function startTurn(who: Unit) {
     if (who.hp <= 0) return false;
     if (who.burnHits > 0 && who.burnDmg > 0) {
-      const { hpHit } = applyRaw(who, who.burnDmg);
-      if (hpHit > 0) {
-        log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, kind: "BURN" }));
-      }
+      const { hpHit, soak } = applyRaw(who, who.burnDmg);
       who.burnHits -= 1;
+      if (hpHit > 0 || soak > 0) {
+        log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, soak, kind: "BURN", burn: who.burnHits, poison: who.poison, bleed: who.bleed, armor: who.armorPool }));
+      }
     }
     if (who.hp > 0 && who.poison > 0) {
-      const { hpHit } = applyRaw(who, who.poison);
-      if (hpHit > 0) log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, kind: "POISON" }));
+      const { hpHit, soak } = applyRaw(who, who.poison);
       who.poison = Math.max(0, who.poison - 1);
+      if (hpHit > 0 || soak > 0) {
+        log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, soak, kind: "POISON", poison: who.poison, bleed: who.bleed, burn: who.burnHits, armor: who.armorPool }));
+      }
     }
     if (who.hp > 0 && who.bleed > 0) {
-      const { hpHit } = applyRaw(who, who.bleed);
-      if (hpHit > 0) log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, kind: "BLEED" }));
+      const { hpHit, soak } = applyRaw(who, who.bleed);
       who.bleed = Math.max(0, who.bleed - 1);
+      if (hpHit > 0 || soak > 0) {
+        log.push(line(tick, "combat.dot", { name: who.name, id: who.id || who.name, dmg: hpHit, soak, kind: "BLEED", poison: who.poison, bleed: who.bleed, burn: who.burnHits, armor: who.armorPool }));
+      }
     }
     if (who.hp <= 0) return false;
     const regen = Math.round(who.stats.regen || 0);
-    if (regen > 0) {
+    if (regen > 0 && who.hp < who.maxHp) {
+      const before = who.hp;
       who.hp = Math.min(who.maxHp, who.hp + regen);
-      log.push(line(tick, "combat.regen", { name: who.name, id: who.id || who.name, hp: regen }));
+      const gained = Math.round(who.hp - before);
+      if (gained > 0) log.push(line(tick, "combat.regen", { name: who.name, id: who.id || who.name, hp: gained }));
     }
     if (who.frozen) {
       who.frozen = false;

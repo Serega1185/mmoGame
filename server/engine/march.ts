@@ -1,11 +1,14 @@
-export type NodeKind = "monster" | "elite" | "mystery" | "city" | "boss";
-export type ResolvedKind = "monster" | "elite" | "city" | "loot" | "boss";
+import { mineBandFor, rollOre, type OreId } from "./mineTables.ts";
+
+export type NodeKind = "monster" | "elite" | "mystery" | "city" | "boss" | "mine";
+export type ResolvedKind = "monster" | "elite" | "city" | "loot" | "boss" | "mine";
 
 export type MarchNode = {
   id: string;
   floor: number;
   col: number;
   kind: NodeKind;
+  ore?: OreId;
   resolved?: ResolvedKind;
   next: string[];
 };
@@ -15,7 +18,7 @@ export type MarchState = {
   current: string | null;
   pending: string | null;
   visited: string[];
-  pendingFight?: { kind: "normal" | "elite" | "boss"; enemyIds: string[] } | null;
+  pendingFight?: { kind: "normal" | "elite" | "boss" | "mine"; enemyIds: string[]; ore?: OreId } | null;
 };
 
 export type PublicMarch = {
@@ -24,6 +27,7 @@ export type PublicMarch = {
     floor: number;
     col: number;
     kind: NodeKind | "loot";
+    ore?: OreId;
     next: string[];
   }[];
   current: string | null;
@@ -51,7 +55,7 @@ export function rollMystery(): ResolvedKind {
   return "loot";
 }
 
-export function generateMarch(): MarchState {
+export function generateMarch(depth = 1): MarchState {
   const nodes: MarchNode[] = [];
   const byId = new Map<string, MarchNode>();
 
@@ -111,9 +115,40 @@ export function generateMarch(): MarchState {
   if (extraCityPool.length) {
     const extra = extraCityPool[Math.floor(Math.random() * extraCityPool.length)]!;
     extra.kind = "city";
+    extra.ore = undefined;
   }
 
+  placeMines(nodes, depth);
+
   return { nodes, current: null, pending: null, visited: [] };
+}
+
+export function placeMines(nodes: MarchNode[], depth: number, skipIds?: Iterable<string>) {
+  const band = mineBandFor(depth);
+  const n = band.minMines + Math.floor(Math.random() * (band.maxMines - band.minMines + 1));
+  if (n <= 0) return;
+  const skip = new Set(skipIds || []);
+  const pool = nodes.filter(
+    (node) =>
+      node.kind !== "city" &&
+      node.kind !== "boss" &&
+      node.kind !== "mine" &&
+      node.floor !== 5 &&
+      node.floor !== 10 &&
+      !skip.has(node.id)
+  );
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const a = pool[i]!;
+    pool[i] = pool[j]!;
+    pool[j] = a;
+  }
+  for (let i = 0; i < n && i < pool.length; i++) {
+    const node = pool[i]!;
+    node.kind = "mine";
+    node.ore = rollOre(band.weights);
+    node.resolved = undefined;
+  }
 }
 
 export function parseMarch(raw: unknown): MarchState | null {
@@ -127,8 +162,12 @@ export function parseMarch(raw: unknown): MarchState | null {
       visited: Array.isArray(s.visited) ? s.visited.map(String) : [],
       pendingFight: s.pendingFight && Array.isArray(s.pendingFight.enemyIds)
         ? {
-            kind: s.pendingFight.kind === "elite" || s.pendingFight.kind === "boss" ? s.pendingFight.kind : "normal",
+            kind:
+              s.pendingFight.kind === "elite" || s.pendingFight.kind === "boss" || s.pendingFight.kind === "mine"
+                ? s.pendingFight.kind
+                : "normal",
             enemyIds: s.pendingFight.enemyIds.map(String),
+            ore: s.pendingFight.ore,
           }
         : null,
     };
@@ -157,6 +196,7 @@ export function toPublicMarch(state: MarchState): PublicMarch {
       floor: n.floor,
       col: n.col,
       kind: displayKind(n, state.pending),
+      ore: n.kind === "mine" ? n.ore : undefined,
       next: n.next,
     })),
     current: state.current,
@@ -166,9 +206,10 @@ export function toPublicMarch(state: MarchState): PublicMarch {
   };
 }
 
-export function combatKind(resolved: ResolvedKind | NodeKind): "normal" | "elite" | "boss" | null {
+export function combatKind(resolved: ResolvedKind | NodeKind): "normal" | "elite" | "boss" | "mine" | null {
   if (resolved === "monster") return "normal";
   if (resolved === "elite") return "elite";
   if (resolved === "boss") return "boss";
+  if (resolved === "mine") return "mine";
   return null;
 }

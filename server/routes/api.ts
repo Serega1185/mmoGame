@@ -15,6 +15,10 @@ api.get("/status", (_req, res) => {
   res.json(publicStatus());
 });
 
+api.get("/catalog/items", (_req, res) => {
+  res.json({ items: game.itemCatalog() });
+});
+
 api.use((req, res, next) => {
   if (!loadGate().maintenance) return next();
   if (req.user?.role === "admin") return next();
@@ -158,11 +162,17 @@ api.post("/game/leave-city", requireAuth, (req, res) => {
   res.json(r);
 });
 
+api.post("/city/switch", requireAuth, (req, res) => {
+  const r = game.switchCity(req.user!.id, Number(req.body?.depth));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true });
+});
+
 api.post("/game/loot", requireAuth, (req, res) => {
   const id = req.body?.instanceId;
   const r = game.pickLoot(req.user!.id, id == null || id === "" ? null : String(id));
   if (r.error) return res.status(400).json({ error: r.error });
-  res.json({ ok: true });
+  res.json({ ok: true, ore: r.ore || null });
 });
 
 api.post("/game/talent", requireAuth, (req, res) => {
@@ -216,7 +226,9 @@ api.get("/shop", requireAuth, (req, res) => {
   const { error, character } = game.requireAlive(req.user!.id);
   if (error || !character) return res.status(400).json({ error });
   if (character.location !== "CITY") return res.status(400).json({ error: "The stall is in the city." });
-  res.json(game.shopState(req.user!.id));
+  const state = game.shopState(req.user!.id);
+  if (state.restocked && state.depth != null) broadcast({ type: "shop", depth: state.depth });
+  res.json(state);
 });
 
 api.post("/shop/refresh", requireAuth, (req, res) => {
@@ -224,12 +236,14 @@ api.post("/shop/refresh", requireAuth, (req, res) => {
   if (character?.location !== "CITY") return res.status(400).json({ error: "The stall is in the city." });
   const r = game.refreshShop(req.user!.id, false);
   if (r.error) return res.status(400).json({ error: r.error });
+  if (r.depth != null) broadcast({ type: "shop", depth: r.depth });
   res.json(game.shopState(req.user!.id));
 });
 
 api.post("/shop/buy", requireAuth, (req, res) => {
   const r = game.buyShop(req.user!.id, String(req.body?.id || ""));
   if (r.error) return res.status(400).json({ error: r.error });
+  if (r.depth != null) broadcast({ type: "shop", depth: r.depth });
   res.json({ ok: true });
 });
 
@@ -242,6 +256,7 @@ api.post("/shop/sell", requireAuth, (req, res) => {
 api.post("/shop/upgrade", requireAuth, (req, res) => {
   const r = game.upgradeShop(req.user!.id);
   if (r.error) return res.status(400).json({ error: r.error });
+  if (r.depth != null) broadcast({ type: "shop", depth: r.depth });
   res.json({ ok: true });
 });
 
@@ -324,13 +339,69 @@ api.post("/auction/upgrade", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+function guildCap(level: number) {
+  return CONFIG.GUILD_START_CAPACITY + (Math.max(1, level) - 1) * CONFIG.GUILD_CAPACITY_PER_LEVEL;
+}
+
+function publicGuildRow(g: {
+  id: string;
+  name: string;
+  tag: string;
+  description: string;
+  emblem: string;
+  level: number;
+  leader_user_id: string;
+  created_at: number;
+}) {
+  const members = db
+    .prepare(
+      `SELECT m.rank, m.joined_at, u.username, u.id,
+        (SELECT c.name FROM characters c WHERE c.user_id=u.id AND c.status='ALIVE' ORDER BY c.created_at DESC LIMIT 1) AS character_name,
+        (SELECT c.level FROM characters c WHERE c.user_id=u.id AND c.status='ALIVE' ORDER BY c.created_at DESC LIMIT 1) AS character_level,
+        (SELECT c.class FROM characters c WHERE c.user_id=u.id AND c.status='ALIVE' ORDER BY c.created_at DESC LIMIT 1) AS character_class
+       FROM guild_members m JOIN users u ON u.id=m.user_id
+       WHERE m.guild_id=?
+       ORDER BY CASE m.rank WHEN 'leader' THEN 0 ELSE 1 END, m.joined_at`
+    )
+    .all(g.id) as {
+    rank: string;
+    joined_at: number;
+    username: string;
+    id: string;
+    character_name: string | null;
+    character_level: number | null;
+    character_class: string | null;
+  }[];
+  const leader = members.find((m) => m.rank === "leader") || members[0];
+  return {
+    ...g,
+    roster: members,
+    memberCount: members.length,
+    members: members.length,
+    cap: guildCap(g.level),
+    leaderName: leader?.username || "",
+    upgradeCost: CONFIG.GUILD_UPGRADE_BASE * g.level,
+  };
+}
+
 api.get("/guilds", requireAuth, (_req, res) => {
   const list = db
-    .prepare(
-      `SELECT g.*, (SELECT COUNT(*) FROM guild_members m WHERE m.guild_id=g.id) AS members FROM guilds g ORDER BY g.level DESC, g.created_at`
-    )
-    .all();
-  res.json({ guilds: list, requiredRegion: CONFIG.GUILD_REQUIRED_REGION, cost: CONFIG.GUILD_CREATION_COST });
+    .prepare(`SELECT * FROM guilds g ORDER BY g.level DESC, g.created_at`)
+    .all() as {
+    id: string;
+    name: string;
+    tag: string;
+    description: string;
+    emblem: string;
+    level: number;
+    leader_user_id: string;
+    created_at: number;
+  }[];
+  res.json({
+    guilds: list.map(publicGuildRow),
+    requiredRegion: CONFIG.GUILD_REQUIRED_REGION,
+    cost: CONFIG.GUILD_CREATION_COST,
+  });
 });
 
 api.get("/guild", requireAuth, (req, res) => {
@@ -520,6 +591,18 @@ api.post("/admin/drops/reset", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminResetDropTables());
 });
 
+api.get("/admin/shop", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminShopTables());
+});
+
+api.post("/admin/shop", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveShopTables(req.body));
+});
+
+api.post("/admin/shop/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetShopTables());
+});
+
 api.get("/admin/packs", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminPackTables());
 });
@@ -530,6 +613,40 @@ api.post("/admin/packs", requireAuth, requireAdmin, (req, res) => {
 
 api.post("/admin/packs/reset", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminResetPackTables());
+});
+
+api.get("/admin/mines", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminMineTables());
+});
+
+api.post("/admin/mines", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveMineTables(req.body));
+});
+
+api.post("/admin/mines/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetMineTables());
+});
+
+api.get("/admin/items", requireAuth, requireAdmin, (_req, res) => {
+  res.json({ items: game.adminItemDefs(), sets: game.adminSets(), icons: game.adminItemIcons() });
+});
+
+api.post("/admin/items", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveItemDef(req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.post("/admin/items/icon", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveItemIcon(String(req.body?.data || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.post("/admin/items/delete", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminDeleteItemDef(String(req.body?.id || ""));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
 });
 
 api.get("/admin/gate", requireAuth, requireAdmin, (_req, res) => {

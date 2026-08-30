@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, EQUIP_LAYOUT, type Item } from "./api";
 import { InventoryGrid } from "./InventoryGrid";
 import { ChatDock } from "./ChatDock";
-import { ItemFace, ItemTooltip, SetTooltip, fmtStat, statEntries } from "./ui";
+import { HoverHint, ItemFace, ItemTooltip, SetTooltip, fmtStat, statEntries } from "./ui";
 import { LangSwitcher, useI18n } from "./i18n";
-import { BattleStage, type BattleFoe, type BattleFx } from "./BattleStage";
+import { BattleStage, applyAuraLine, auraFromStats, type BattleAura, type BattleFoe, type BattleFx } from "./BattleStage";
 import { SET_MARK } from "./itemIcons";
 import { ForgeView, putForgeSlot } from "./ForgeView";
 import { AdminView } from "./AdminView";
@@ -15,7 +15,29 @@ import { fetchStatus, rememberGate, type GateStatus } from "./gate";
 
 const HIT_DELAY_MS = 1000;
 const GATE_MS = 60_000;
-const DAMAGE_KEYS = new Set(["combat.strike", "combat.dot", "combat.thorns"]);
+const BEAT_KEYS = new Set(["combat.strike", "combat.dot", "combat.thorns", "combat.regen", "combat.leech"]);
+const PREFIX_KEYS = new Set(["combat.crit", "combat.dodges", "combat.armor", "combat.barrier", "combat.chain"]);
+const FOLLOWER_KEYS = new Set(["combat.poison", "combat.bleed", "combat.burn", "combat.freeze", "combat.skip"]);
+
+type FightLogLine = { t: number; text: string; key?: string; vars?: Record<string, string | number> };
+
+function takeFightClause(log: FightLogLine[], start: number) {
+  let i = start;
+  const lines: FightLogLine[] = [];
+  while (i < log.length && PREFIX_KEYS.has(log[i]!.key || "")) {
+    lines.push(log[i++]!);
+  }
+  if (i < log.length && BEAT_KEYS.has(log[i]!.key || "")) {
+    lines.push(log[i++]!);
+    while (i < log.length && FOLLOWER_KEYS.has(log[i]!.key || "")) {
+      lines.push(log[i++]!);
+    }
+    return { lines, i, beat: true };
+  }
+  if (lines.length) return { lines, i, beat: false };
+  if (i < log.length) lines.push(log[i++]!);
+  return { lines, i, beat: false };
+}
 
 function hurtFoe(foes: BattleFoe[], id: string, amount: number) {
   const live = foes.findIndex((f) => String(f.id) === id && f.hp > 0);
@@ -70,6 +92,19 @@ type Character = {
   };
 };
 
+type CityInfo = {
+  depth: number;
+  name: string;
+  level: number;
+  treasury: number;
+  taxPercent: number;
+  shopLevel: number;
+  ownerName: string | null;
+  activity: number;
+  art: string;
+  unlocked: { depth: number; name: string }[];
+};
+
 type GameState = {
   needCharacter?: boolean;
   user: User;
@@ -86,16 +121,23 @@ type GameState = {
   region: { name: string; theme: string; description: string };
   grid: { cols: number; rows: number };
   storage: null | { items: Item[]; cols: number; rows: number; cells: number; level: number; upgradeCost: number };
-  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number }[] | null;
+  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number }[] | null;
   packOdds?: { two: number; three: number };
+  city?: CityInfo | null;
 };
+
+function seedBattleAuras(stats: Record<string, number> | undefined, foes: BattleFoe[]): Record<string, BattleAura> {
+  const map: Record<string, BattleAura> = { player: auraFromStats(stats) };
+  for (const e of foes) map[String(e.id)] = auraFromStats(undefined, e.armor || 0);
+  return map;
+}
 
 type Fight = {
   won: boolean;
   dead?: boolean;
   awaiting?: boolean;
-  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number };
-  enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number }[];
+  enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number; armor?: number };
+  enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number }[];
   log: { t: number; text: string; key?: string; vars?: Record<string, string | number> }[];
   gold?: number;
   loot?: Item[];
@@ -105,6 +147,7 @@ type Fight = {
   playerHp: number;
   startPlayerHp?: number;
   playerMaxHp?: number;
+  ore?: Item | null;
 };
 
 const CLASS_IDS = ["Ironclad", "Shadehand", "Thornbow"] as const;
@@ -123,7 +166,11 @@ export default function App() {
   const [playbackDone, setPlaybackDone] = useState(true);
   const [livePlayerHp, setLivePlayerHp] = useState(0);
   const [liveFoes, setLiveFoes] = useState<BattleFoe[]>([]);
+  const [liveAuras, setLiveAuras] = useState<Record<string, BattleAura>>({});
   const [battleFx, setBattleFx] = useState<BattleFx | null>(null);
+  const playingFight = useRef(false);
+  const [foundOre, setFoundOre] = useState<Item | null>(null);
+  const [hoverOre, setHoverOre] = useState<{ item: Item; x: number; y: number } | null>(null);
   const logBox = useRef<HTMLDivElement>(null);
   const [linkQ, setLinkQ] = useState<string | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -135,6 +182,7 @@ export default function App() {
   const [guilds, setGuilds] = useState<Record<string, unknown> | null>(null);
   const [myGuild, setMyGuild] = useState<Record<string, unknown> | null>(null);
   const [forgeSlots, setForgeSlots] = useState<(string | null)[]>([null, null, null]);
+  const [pickCity, setPickCity] = useState(false);
   const [hoverEq, setHoverEq] = useState<{ item: Item; x: number; y: number } | null>(null);
   const [hoverSet, setHoverSet] = useState<{
     set: Character["power"]["setBonuses"][number];
@@ -184,6 +232,7 @@ export default function App() {
     const foes = game?.pendingFight;
     const ch = game?.character;
     if (!foes?.length || !ch) return;
+    if (playingFight.current) return;
     setFight({
       awaiting: true,
       won: false,
@@ -196,8 +245,18 @@ export default function App() {
     });
     setLivePlayerHp(ch.hp);
     setLiveFoes(foes.map((e) => ({ ...e, hp: e.maxHp })));
+    setLiveAuras(seedBattleAuras(ch.power?.stats, foes));
     setPlaybackDone(true);
   }, [game?.pendingFight, game?.character?.id]);
+
+  useEffect(() => {
+    const eq = game?.equipment;
+    if (!eq) {
+      setHoverEq(null);
+      return;
+    }
+    setHoverEq((h) => (h && eq.some((e) => e.id === h.item.id) ? h : null));
+  }, [game?.equipment]);
 
   useEffect(() => {
     const tick = async () => {
@@ -225,6 +284,31 @@ export default function App() {
     };
   }, [user?.id, gate?.maintenance]);
 
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const shopDepthRef = useRef(game?.city?.depth);
+  shopDepthRef.current = game?.city?.depth;
+
+  useEffect(() => {
+    if (!ws) return;
+    const onMsg = (ev: MessageEvent) => {
+      let m: { type?: string; depth?: number };
+      try {
+        m = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      if (m.type !== "shop") return;
+      if (modeRef.current !== "shop") return;
+      if (m.depth != null && shopDepthRef.current != null && Number(m.depth) !== Number(shopDepthRef.current)) return;
+      api<Record<string, unknown>>("/shop")
+        .then(setShop)
+        .catch(() => {});
+    };
+    ws.addEventListener("message", onMsg);
+    return () => ws.removeEventListener("message", onMsg);
+  }, [ws]);
+
   useEffect(() => {
     logBox.current?.scrollTo({ top: logBox.current.scrollHeight, behavior: "smooth" });
   }, [logShown]);
@@ -232,13 +316,16 @@ export default function App() {
   useEffect(() => {
     if (!fight || fight.awaiting) {
       if (!fight) {
+        playingFight.current = false;
         setBattleFx(null);
+        setLiveAuras({});
         setPlaybackDone(true);
       }
       return;
     }
+    playingFight.current = true;
     let cancelled = false;
-    const log = fight.log;
+    const log = fight.log || [];
     const cap = Math.max(1, fight.playerMaxHp ?? fight.startPlayerHp ?? 1);
     let pHp = fight.startPlayerHp ?? cap;
     let foes: BattleFoe[] = (fight.enemies?.length
@@ -251,47 +338,69 @@ export default function App() {
             hp: 0,
             maxHp: fight.enemy.hp,
             damage: fight.enemy.damage || 0,
+            armor: fight.enemy.armor || 0,
           },
         ]
     ).map((e) => ({ ...e, hp: e.maxHp }));
+    let auras = seedBattleAuras(game?.character?.power?.stats, foes);
     setLivePlayerHp(pHp);
     setLiveFoes(foes);
+    setLiveAuras(auras);
     setLogShown(0);
     setPlaybackDone(false);
     setBattleFx(null);
     let fxN = 0;
-    let pendingCrit = false;
-
     (async () => {
       let i = 0;
       while (!cancelled && i < log.length) {
+        const clause = takeFightClause(log, i);
+        i = clause.i;
         let hit = false;
-        while (!cancelled && i < log.length) {
-          const line = log[i]!;
-          if (hit && DAMAGE_KEYS.has(line.key || "")) break;
-          i += 1;
+        let pendingCrit = false;
+        let pendingSoak = 0;
+        let pendingDodge = false;
+        for (const line of clause.lines) {
           if (line.key === "combat.crit") pendingCrit = true;
+          if (line.key === "combat.armor") pendingSoak = Number(line.vars?.n || 0);
+          if (line.key === "combat.dodges") pendingDodge = true;
+          auras = applyAuraLine(auras, line);
           if (line.key === "combat.strike") {
             const dealt = Number(line.vars?.dealt || 0);
+            const soak = Number(line.vars?.soak ?? pendingSoak);
+            pendingSoak = 0;
+            const dodged = pendingDodge;
+            pendingDodge = false;
             const def = String(line.vars?.defId || "");
             const att = String(line.vars?.attId || "");
             if (def === "player") pHp = Math.max(0, pHp - dealt);
             else foes = hurtFoe(foes, def, dealt);
             fxN += 1;
-            setBattleFx({ n: fxN, att, def, dealt, crit: pendingCrit });
+            setBattleFx({
+              n: fxN,
+              att,
+              def,
+              dealt: dodged ? 0 : dealt > 0 ? dealt : soak,
+              blocked: !dodged && dealt <= 0 && soak > 0,
+              dodge: dodged,
+              crit: pendingCrit && !dodged,
+            });
             pendingCrit = false;
-            setLivePlayerHp(pHp);
-            setLiveFoes(foes);
             hit = true;
           } else if (line.key === "combat.dot") {
             const dmg = Number(line.vars?.dmg || 0);
+            const soak = Number(line.vars?.soak || 0);
             const id = String(line.vars?.id || "");
             if (id === "player") pHp = Math.max(0, pHp - dmg);
             else foes = hurtFoe(foes, id, dmg);
             fxN += 1;
-            setBattleFx({ n: fxN, att: "", def: id, dealt: dmg, dot: true });
-            setLivePlayerHp(pHp);
-            setLiveFoes(foes);
+            setBattleFx({
+              n: fxN,
+              att: "",
+              def: id,
+              dealt: dmg > 0 ? dmg : soak,
+              blocked: dmg <= 0 && soak > 0,
+              dot: true,
+            });
             hit = true;
           } else if (line.key === "combat.thorns") {
             const dmg = Number(line.vars?.dmg || 0);
@@ -300,44 +409,53 @@ export default function App() {
             else foes = hurtFoe(foes, att, dmg);
             fxN += 1;
             setBattleFx({ n: fxN, att: String(line.vars?.def || ""), def: att, dealt: dmg, dot: true });
-            setLivePlayerHp(pHp);
-            setLiveFoes(foes);
             hit = true;
           } else if (line.key === "combat.regen") {
             const hp = Number(line.vars?.hp || 0);
             const id = String(line.vars?.id || "");
-            if (id === "player") pHp = Math.min(cap, pHp + hp);
-            else {
-              foes = foes.map((f) =>
-                String(f.id) === id ? { ...f, hp: Math.min(f.maxHp, f.hp + hp) } : f
-              );
+            if (hp > 0) {
+              if (id === "player") pHp = Math.min(cap, pHp + hp);
+              else {
+                foes = foes.map((f) =>
+                  String(f.id) === id ? { ...f, hp: Math.min(f.maxHp, f.hp + hp) } : f
+                );
+              }
+              fxN += 1;
+              setBattleFx({ n: fxN, att: "", def: id, dealt: hp, heal: true });
+              hit = true;
             }
-            setLivePlayerHp(pHp);
-            setLiveFoes(foes);
           } else if (line.key === "combat.leech") {
             const ls = Number(line.vars?.ls || 0);
             const att = String(line.vars?.attId || "");
-            if (att === "player") pHp = Math.min(cap, pHp + ls);
-            else {
-              foes = foes.map((f) =>
-                String(f.id) === att ? { ...f, hp: Math.min(f.maxHp, f.hp + ls) } : f
-              );
+            if (ls > 0) {
+              if (att === "player") pHp = Math.min(cap, pHp + ls);
+              else {
+                foes = foes.map((f) =>
+                  String(f.id) === att ? { ...f, hp: Math.min(f.maxHp, f.hp + ls) } : f
+                );
+              }
+              fxN += 1;
+              setBattleFx({ n: fxN, att: "", def: att, dealt: ls, heal: true });
+              hit = true;
             }
-            setLivePlayerHp(pHp);
-            setLiveFoes(foes);
           }
-          setLogShown(i);
         }
-        if (hit && !cancelled) await new Promise((r) => setTimeout(r, HIT_DELAY_MS));
-        if (!hit) break;
+        setLiveAuras(auras);
+        setLivePlayerHp(pHp);
+        setLiveFoes(foes);
+        setLogShown(i);
+        if (clause.beat && hit && !cancelled) await new Promise((r) => setTimeout(r, HIT_DELAY_MS));
+        if (!clause.lines.length) break;
       }
       if (!cancelled) {
+        playingFight.current = false;
         if (!fight.dead) {
           try {
             await reload();
           } catch {
             /* keep the replay even if the ledger hiccups */
           }
+          if (fight.ore && !fight.loot?.length) setFoundOre(fight.ore);
         }
         setPlaybackDone(true);
       }
@@ -571,11 +689,11 @@ export default function App() {
   const stats = c.power.stats;
   const displayHp = Math.min(fight ? livePlayerHp : c.hp, fight?.playerMaxHp ?? maxHp);
   const xpNeed = 40 + c.level * 25;
-  const waitingReplay = !!(fight && !fight.dead && !fight.awaiting && !playbackDone);
+  const waitingReplay = !!(fight && !fight.awaiting && !playbackDone);
   const lootOffers = waitingReplay ? [] : game.lootChoices || [];
   const awaiting = !!(fight?.awaiting && !fight.dead);
-  const showArena = !!(fight && !fight.dead && (awaiting || !playbackDone));
-  const showLastLog = !!(fight && !fight.dead && fight.log?.length);
+  const showArena = !!(fight && (fight.awaiting || !playbackDone));
+  const showLastLog = !!(showArena && fight.log?.length);
   const march = game.march;
   const roadShown = mobile === "fight" || (typeof window !== "undefined" && window.innerWidth > 1100);
 
@@ -585,6 +703,8 @@ export default function App() {
       const playerMaxHp = maxHp;
       const r = await api<Fight>("/game/fight", { method: "POST" });
       const packed: Fight = { ...r, awaiting: false, startPlayerHp, playerMaxHp };
+      playingFight.current = true;
+      setPlaybackDone(false);
       setLivePlayerHp(startPlayerHp);
       setLiveFoes(
         (packed.enemies?.length
@@ -733,7 +853,7 @@ export default function App() {
             {t("crowns")} <b>{game.user.coins}</b>
           </span>
           <span className="pill">{t("roundOf", { round: c.round })}</span>
-          <span className="pill">{t("depthOf", { n: c.depth || 0 })}</span>
+          <span className="pill">{t("depthOf", { n: c.depth || 1 })}</span>
         </div>
         <div className="row topbar-actions">
           <button className="map-btn" type="button" title={t("openMap")} onClick={() => setMapPeek(true)}>
@@ -781,6 +901,12 @@ export default function App() {
                     <em>
                       {displayHp}/{maxHp}
                     </em>
+                    <div className="armor-badge" title={t("stat_armor")}>
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="rgba(22,14,10,0.88)" stroke="#c8c4bc" strokeWidth="1.6">
+                        <path d="M12 3 L20 6 V12 C20 17 12 21 12 21 C12 21 4 17 4 12 V6 Z" />
+                      </svg>
+                      <b>{Math.round(stats.armor || 0)}</b>
+                    </div>
                   </div>
                   <div className="xpbar" title={t("xpBar", { cur: c.xp, need: xpNeed })}>
                     <span style={{ width: `${(c.xp / Math.max(1, xpNeed)) * 100}%` }} />
@@ -788,12 +914,6 @@ export default function App() {
                       {c.xp}/{xpNeed}
                     </em>
                   </div>
-                </div>
-                <div className="armor-badge" title={t("stat_armor")}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c8c4bc" strokeWidth="1.6">
-                    <path d="M12 3 L20 6 V12 C20 17 12 21 12 21 C12 21 4 17 4 12 V6 Z" />
-                  </svg>
-                  <b>{Math.round(stats.armor || 0)}</b>
                 </div>
               </div>
 
@@ -835,8 +955,8 @@ export default function App() {
                         }}
                         onDoubleClick={() => it && place(it.id, "INVENTORY")}
                         onClick={(e) => it && (e.ctrlKey || e.metaKey) && linkItem(it)}
-                        onMouseEnter={(e) => it && setHoverEq({ item: it, x: e.clientX, y: e.clientY })}
-                        onMouseMove={(e) => it && setHoverEq({ item: it, x: e.clientX, y: e.clientY })}
+                        onMouseEnter={(e) => (it ? setHoverEq({ item: it, x: e.clientX, y: e.clientY }) : setHoverEq(null))}
+                        onMouseMove={(e) => (it ? setHoverEq({ item: it, x: e.clientX, y: e.clientY }) : setHoverEq(null))}
                         onMouseLeave={() => setHoverEq(null)}
                       >
                         {it ? (
@@ -878,7 +998,7 @@ export default function App() {
                   }}
                   onContext={(it) => setCtx({ item: it, kind: "inv" })}
                   onPick={(it) => {
-                    if (mode === "forge") setForgeSlots(putForgeSlot(forgeSlots, it.id));
+                    if (mode === "forge" && it.definition.category !== "ore") setForgeSlots(putForgeSlot(forgeSlots, it.id));
                   }}
                 />
                 {game.ground.length || game.inventory.some((i) => i.grid_x == null) ? (
@@ -908,29 +1028,49 @@ export default function App() {
 
         <main>
           {mode === "storage" && game.storage ? (
-            <div className="panel inv-wrap center-pane">
-              <div className="section-title">{t("vaultTitle", { level: game.storage.level, cells: game.storage.cells })}</div>
-              <p className="muted">{t("vaultHint")}</p>
-              <InventoryGrid
-                cols={game.storage.cols}
-                rows={game.storage.rows}
-                items={game.storage.items}
-                dest="STORAGE"
-                charLevel={c.level}
-                onPlace={(id, x, y, rotated) => place(id, "STORAGE", { x, y, rotated })}
-                onCtrlClick={linkItem}
-                cell={70}
-              />
-              <div className="row" style={{ marginTop: 8 }}>
-                <button onClick={async () => { await api("/storage/upgrade", { method: "POST" }); reload(); }}>
-                  {t("enlargeChest", { cost: game.storage.upgradeCost })}
+            <div className="panel center-pane stall-pane">
+              <div className="stall-head">
+                <div className="stall-head-ico" aria-hidden>
+                  ♜
+                </div>
+                <div className="stall-head-copy">
+                  <h2>{t("vaultTitle", { level: game.storage.level, cells: game.storage.cells })}</h2>
+                  <p>{t("vaultHint")}</p>
+                </div>
+              </div>
+              <div className="vault-grid-wrap">
+                <InventoryGrid
+                  cols={game.storage.cols}
+                  rows={game.storage.rows}
+                  items={game.storage.items}
+                  dest="STORAGE"
+                  charLevel={c.level}
+                  onPlace={(id, x, y, rotated) => place(id, "STORAGE", { x, y, rotated })}
+                  onCtrlClick={linkItem}
+                  cell={70}
+                />
+              </div>
+              <div className="stall-actions">
+                <button
+                  type="button"
+                  className="stall-act"
+                  onClick={async () => {
+                    await api("/storage/upgrade", { method: "POST" });
+                    reload();
+                  }}
+                >
+                  <span>{t("enlargeAction")}</span>
+                  <em>{game.storage.upgradeCost}</em>
                 </button>
-                <button onClick={() => setMode("city")}>{t("backSquare")}</button>
+                <button type="button" className="stall-act ghost" onClick={() => setMode("city")}>
+                  <span>{t("backSquare")}</span>
+                </button>
               </div>
             </div>
           ) : mode === "shop" && shop ? (
             <ShopView
               shop={shop}
+              coins={game.user.coins}
               charLevel={c.level}
               onClose={() => setMode("city")}
               reload={async () => {
@@ -965,6 +1105,7 @@ export default function App() {
             <GuildView
               list={guilds}
               mine={myGuild}
+              userId={game.user.id}
               reload={async () => {
                 setGuilds(await api("/guilds"));
                 setMyGuild(await api("/guild"));
@@ -989,36 +1130,115 @@ export default function App() {
             />
           ) : inCity ? (
             <div className="panel city-map center-pane">
-              <div style={{ textAlign: "center", paddingTop: 16 }}>
+              <div className="city-head">
                 <h2>{t("townSquare")}</h2>
-                <p className="muted">{t("townHint")}</p>
+                <button onClick={() => setPickCity(true)}>{t("changeCity")}</button>
               </div>
-              <div className="building panel" style={{ left: "8%", top: "38%" }} onClick={() => setMode("storage")}>
-                <div className="icon">♜</div>
-                <div className="name">{t("vault")}</div>
-                <div className="desc">{t("vaultDesc")}</div>
+              <div className="city-hero">
+                <div className="city-art-wrap">
+                  <img className="city-art" src={game.city?.art || "/assets/art/gorod1.jpg"} alt="" />
+                </div>
+                <div className="city-hero-side">
+                  <h3>{regionName(game.city?.depth || c.depth, game.city?.name)}</h3>
+                  <p className="city-safe">{t("citySafeZone")}</p>
+                  <div className="city-stats">
+                    <HoverHint className="city-stat" title={t("cityLevel")} text={t("cityLevelTip")}>
+                      <div className="city-stat-ico">◆</div>
+                      <div className="city-stat-body">
+                        <div className="city-stat-val">{game.city?.level ?? 1}</div>
+                        <div className="city-stat-lab">{t("cityLevel")}</div>
+                      </div>
+                    </HoverHint>
+                    <HoverHint className="city-stat" title={t("cityActivity")} text={t("cityActivityTip")}>
+                      <div className="city-stat-ico">☉</div>
+                      <div className="city-stat-body">
+                        <div className="city-stat-val">{game.city?.activity ?? 0}</div>
+                        <div className="city-stat-lab">{t("cityActivity")}</div>
+                      </div>
+                    </HoverHint>
+                    <HoverHint className="city-stat" title={t("cityTreasury")} text={t("cityTreasuryTip")}>
+                      <div className="city-stat-ico">⚜</div>
+                      <div className="city-stat-body">
+                        <div className="city-stat-val">{game.city?.treasury ?? 0}</div>
+                        <div className="city-stat-lab">{t("cityTreasury")}</div>
+                      </div>
+                    </HoverHint>
+                    <HoverHint className="city-stat" title={t("cityTax")} text={t("cityTaxTip")}>
+                      <div className="city-stat-ico">%</div>
+                      <div className="city-stat-body">
+                        <div className="city-stat-val">{game.city?.taxPercent ?? 0}%</div>
+                        <div className="city-stat-lab">{t("cityTax")}</div>
+                      </div>
+                    </HoverHint>
+                  </div>
+                </div>
               </div>
-              <div className="building panel" style={{ left: "28%", top: "24%" }} onClick={() => { setForgeSlots([null, null, null]); setMode("forge"); }}>
-                <div className="icon">⚒</div>
-                <div className="name">{t("forge")}</div>
-                <div className="desc">{t("forgeDesc")}</div>
+              <div className="city-ruler">
+                {t("cityRuler", { name: game.city?.ownerName || t("none") })}
               </div>
-              <div className="building panel" style={{ left: "48%", top: "48%" }} onClick={async () => { setMode("shop"); setShop(await api("/shop")); }}>
-                <div className="icon">⚖</div>
-                <div className="name">{t("stall")}</div>
-                <div className="desc">{t("stallDesc")}</div>
+              <div className="city-builds-title">{t("cityBuildings")}</div>
+              <p className="muted city-builds-hint">{t("cityBuildingsHint")}</p>
+              <div className="city-builds">
+                <CityBuildCard
+                  kind="vault"
+                  icon="♜"
+                  name={t("vault")}
+                  stat={t("buildStat_vault", { n: game.storage?.cells ?? 20 + (game.user.storage_level - 1) * 10 })}
+                  desc={t("vaultDesc")}
+                  tag={t("buildLv", { n: game.user.storage_level })}
+                  onClick={() => setMode("storage")}
+                />
+                <CityBuildCard
+                  kind="forge"
+                  icon="⚒"
+                  name={t("forge")}
+                  stat={t("buildStat_forge")}
+                  desc={t("forgeDesc")}
+                  tag={t("buildTag_craft")}
+                  onClick={() => {
+                    setForgeSlots([null, null, null]);
+                    setMode("forge");
+                  }}
+                />
+                <CityBuildCard
+                  kind="shop"
+                  icon="⚖"
+                  name={t("stall")}
+                  stat={t("buildStat_shop", { n: game.city?.taxPercent ?? 0 })}
+                  desc={t("stallDesc")}
+                  tag={t("buildLv", { n: game.city?.shopLevel ?? 1 })}
+                  onClick={async () => {
+                    setMode("shop");
+                    setShop(await api("/shop"));
+                  }}
+                />
+                <CityBuildCard
+                  kind="auction"
+                  icon="⚔"
+                  name={t("crierBoard")}
+                  stat={t("buildStat_auction")}
+                  desc={t("crierDesc")}
+                  tag={t("buildTag_global")}
+                  onClick={async () => {
+                    setMode("auction");
+                    setAuction(await api("/auction"));
+                  }}
+                />
+                <CityBuildCard
+                  kind="guild"
+                  icon="🛡"
+                  name={t("companyHall")}
+                  stat={t("buildStat_guild")}
+                  desc={t("companyDesc")}
+                  tag={t("buildTag_guild")}
+                  onClick={async () => {
+                    setMode("guild");
+                    setGuilds(await api("/guilds"));
+                    setMyGuild(await api("/guild"));
+                  }}
+                />
               </div>
-              <div className="building panel" style={{ left: "68%", top: "28%" }} onClick={async () => { setMode("auction"); setAuction(await api("/auction")); }}>
-                <div className="icon">⚔</div>
-                <div className="name">{t("crierBoard")}</div>
-                <div className="desc">{t("crierDesc")}</div>
-              </div>
-              <div className="building panel" style={{ left: "78%", top: "54%" }} onClick={async () => { setMode("guild"); setGuilds(await api("/guilds")); setMyGuild(await api("/guild")); }}>
-                <div className="icon">🛡</div>
-                <div className="name">{t("companyHall")}</div>
-                <div className="desc">{t("companyDesc")}</div>
-              </div>
-              <div style={{ position: "absolute", bottom: 12, left: 0, right: 0, textAlign: "center" }}>
+              <div className="city-leave">
                 <button
                   className="danger"
                   onClick={async () => {
@@ -1026,6 +1246,7 @@ export default function App() {
                       await api("/game/leave-city", { method: "POST" });
                       setMode("play");
                       setFight(null);
+                      setPickCity(false);
                       await reload();
                     } catch (e) {
                       setErr(te(e instanceof Error ? e.message : "The gate is shut"));
@@ -1035,6 +1256,35 @@ export default function App() {
                   {t("continueMarch")}
                 </button>
               </div>
+              {pickCity ? (
+                <div className="modal-back" onClick={() => setPickCity(false)}>
+                  <div className="panel modal" onClick={(e) => e.stopPropagation()}>
+                    <h3>{t("changeCity")}</h3>
+                    <div className="city-pick-list">
+                      {(game.city?.unlocked || [{ depth: c.depth, name: game.city?.name || "" }]).map((u) => (
+                        <button
+                          key={u.depth}
+                          className={u.depth === game.city?.depth ? "gold" : ""}
+                          onClick={async () => {
+                            try {
+                              await api("/city/switch", { method: "POST", body: { depth: u.depth } });
+                              setPickCity(false);
+                              await reload();
+                            } catch (e) {
+                              setErr(te(e instanceof Error ? e.message : "The gate is shut"));
+                            }
+                          }}
+                        >
+                          {t("depthOf", { n: u.depth })} · {regionName(u.depth, u.name)}
+                        </button>
+                      ))}
+                    </div>
+                    <button style={{ marginTop: 10 }} onClick={() => setPickCity(false)}>
+                      {t("back")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className={`panel battle-wrap${showArena && !awaiting ? " live" : ""}`} style={{ display: roadShown ? "flex" : "none" }}>
@@ -1051,6 +1301,14 @@ export default function App() {
                     playerName={c.name}
                     playerHp={livePlayerHp}
                     playerMax={fight?.playerMaxHp ?? maxHp}
+                    playerDamage={Math.max(
+                      1,
+                      Math.round(
+                        (stats.magicDamage || 0) > (stats.damage || 0) ? stats.magicDamage || 0 : stats.damage || 0
+                      )
+                    )}
+                    playerAura={liveAuras.player}
+                    foeAuras={liveAuras}
                     foes={liveFoes}
                     inCity={false}
                     fx={awaiting ? null : battleFx}
@@ -1067,9 +1325,9 @@ export default function App() {
               ) : (
                 <p className="muted">{t("mapHint")}</p>
               )}
-              {fight && fight.won && playbackDone && !awaiting ? (
-                <p className="muted last-spoils">{t("spoils", { gold: fight.gold ?? 0, xp: fight.xpGain ?? 0 })}</p>
-              ) : null}
+                  {(fight?.won && playbackDone && !awaiting) ? (
+                    <p className="muted last-spoils">{t("spoils", { xp: fight.xpGain ?? 0 })}</p>
+                  ) : null}
               {showLastLog ? (
                 <div className="log" ref={logBox}>
                   {(fight?.log || []).slice(0, playbackDone || awaiting ? fight!.log.length : logShown).map((l, i) => (
@@ -1133,10 +1391,44 @@ export default function App() {
           items={lootOffers}
           charLevel={c.level}
           setErr={setErr}
-          onDone={async () => {
+          onDone={async (ore) => {
             await reload();
+            if (ore) setFoundOre(ore);
           }}
         />
+      ) : null}
+
+      {foundOre ? (
+        <div className="loot-pick-back">
+          <div className="panel loot-pick loot-pick-ore">
+            <div className="loot-pick-banner">{t("foundOreTitle")}</div>
+            <p className="muted loot-pick-hint">{t("foundOreHint")}</p>
+            <div className="loot-pick-row">
+              <div
+                className="loot-pick-card"
+                onMouseEnter={(e) => setHoverOre({ item: foundOre, x: e.clientX, y: e.clientY })}
+                onMouseMove={(e) => setHoverOre({ item: foundOre, x: e.clientX, y: e.clientY })}
+                onMouseLeave={() => setHoverOre(null)}
+              >
+                <div className={`cell has-item filled r-${foundOre.rarity} loot-pick-cell`}>
+                  <ItemFace item={foundOre} />
+                </div>
+                <div className={`loot-pick-name r-${foundOre.rarity}`}>{itemName(foundOre)}</div>
+                <div className="muted">{t(`rarity_${foundOre.rarity}`)}</div>
+              </div>
+            </div>
+            <button
+              className="gold"
+              onClick={() => {
+                setHoverOre(null);
+                setFoundOre(null);
+              }}
+            >
+              {t("foundOreTake")}
+            </button>
+          </div>
+          {hoverOre ? <ItemTooltip item={hoverOre.item} x={hoverOre.x} y={hoverOre.y} charLevel={c.level} /> : null}
+        </div>
       ) : null}
 
       {ctx ? (
@@ -1180,14 +1472,62 @@ export default function App() {
   );
 }
 
+const STALL_TIERS: { id: string; rarities: string[]; label: string }[] = [
+  { id: "common", rarities: ["Common"], label: "rarity_Common" },
+  { id: "uncommon", rarities: ["Uncommon"], label: "rarity_Uncommon" },
+  { id: "rare", rarities: ["Rare"], label: "rarity_Rare" },
+  { id: "epic", rarities: ["Epic"], label: "rarity_Epic" },
+];
+
+function CityBuildCard({
+  kind,
+  icon,
+  name,
+  stat,
+  desc,
+  tag,
+  onClick,
+}: {
+  kind: "vault" | "forge" | "shop" | "auction" | "guild";
+  icon: string;
+  name: string;
+  stat: string;
+  desc: string;
+  tag: string;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className={`city-bcard k-${kind}`} onClick={onClick}>
+      <div className="city-bcard-ico" aria-hidden>
+        {icon}
+      </div>
+      <div className="city-bcard-body">
+        <div className="city-bcard-name">{name}</div>
+        <div className="city-bcard-stat">{stat}</div>
+        <div className="city-bcard-desc">{desc}</div>
+      </div>
+      <span className="city-bcard-tag">{tag}</span>
+    </button>
+  );
+}
+
+function fmtRestock(ms: number) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
 function ShopView({
   shop,
+  coins,
   charLevel,
   onClose,
   reload,
   setErr,
 }: {
   shop: Record<string, unknown>;
+  coins: number;
   charLevel?: number;
   onClose: () => void;
   reload: () => Promise<void>;
@@ -1195,70 +1535,129 @@ function ShopView({
 }) {
   const { t, te, itemName } = useI18n();
   const items = (shop.items as { id: string; price: number; item: Item }[]) || [];
+  const canManage = !!shop.canManage;
+  const restockAt = Number(shop.restockAt) || 0;
   const [hover, setHover] = useState<{ item: Item; x: number; y: number } | null>(null);
+  const [left, setLeft] = useState(() => Math.max(0, restockAt - Date.now()));
+
+  useEffect(() => {
+    const tick = () => setLeft(Math.max(0, restockAt - Date.now()));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [restockAt]);
+
+  useEffect(() => {
+    if (!restockAt || left > 0) return;
+    const id = window.setTimeout(() => {
+      reload().catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(id);
+  }, [left, restockAt, reload]);
+
+  async function buy(id: string) {
+    try {
+      await api("/shop/buy", { method: "POST", body: { id } });
+      await reload();
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "No"));
+    }
+  }
+
   return (
-    <div className="panel center-pane" style={{ padding: 16 }}>
-      <div className="section-title">{t("stallTitle", { level: String(shop.level) })}</div>
-      <div className="stall-list">
-        {items.map((s) => (
-          <div key={s.id} className="stall-row">
-            <div
-              className={`cell has-item r-${s.item.rarity} board-slot stall-slot`}
-              onMouseEnter={(e) => setHover({ item: s.item, x: e.clientX, y: e.clientY })}
-              onMouseMove={(e) => setHover({ item: s.item, x: e.clientX, y: e.clientY })}
-              onMouseLeave={() => setHover(null)}
-            >
-              <ItemFace item={s.item} />
-            </div>
-            <div className="stall-info">
-              <b>{itemName(s.item)}</b>
-              <div className="muted">
-                {t(`rarity_${s.item.rarity}`)} · {t("requiredLevel", { n: s.item.required_level })}
+    <div className="panel center-pane stall-pane">
+      <div className="stall-head">
+        <div className="stall-head-ico" aria-hidden>
+          ⚖
+        </div>
+        <div className="stall-head-copy">
+          <h2>{t("stallTitle", { level: String(shop.level) })}</h2>
+          <p>
+            {t("stallHint", { tax: Number(shop.taxPercent) || 0 })}{" "}
+            <span className="stall-coins">({t("stallCoinsOnHand", { n: coins })})</span>
+          </p>
+          {restockAt ? <p className="stall-timer">{t("stallRestockIn", { t: fmtRestock(left) })}</p> : null}
+        </div>
+      </div>
+      <div className="stall-cols">
+        {STALL_TIERS.map((tier) => {
+          const rows = items.filter((s) => {
+            if (tier.rarities.includes(s.item.rarity)) return true;
+            return tier.id === "epic" && (s.item.rarity === "Legendary" || s.item.rarity === "Mythic");
+          });
+          return (
+            <div key={tier.id} className={`stall-col r-${tier.id}`}>
+              <div className="stall-col-head">{t(tier.label)}</div>
+              <div className="stall-col-list">
+                {rows.length === 0 ? <div className="stall-empty">{t("stallEmpty")}</div> : null}
+                {rows.map((s) => (
+                  <div key={s.id} className={`stall-card r-${s.item.rarity}`}>
+                    <div
+                      className={`cell has-item r-${s.item.rarity} stall-slot`}
+                      onMouseEnter={(e) => setHover({ item: s.item, x: e.clientX, y: e.clientY })}
+                      onMouseMove={(e) => setHover({ item: s.item, x: e.clientX, y: e.clientY })}
+                      onMouseLeave={() => setHover(null)}
+                    >
+                      <ItemFace item={s.item} />
+                    </div>
+                    <div className="stall-card-copy">
+                      <b>{itemName(s.item)}</b>
+                      <div className="muted">
+                        {t(`rarity_${s.item.rarity}`)} · {t("itemReqShort", { n: s.item.required_level })}
+                      </div>
+                    </div>
+                    <button type="button" className="stall-buy" onClick={() => void buy(s.id)}>
+                      <span className="stall-buy-qty">{t("stallBuyQty")}</span>
+                      <span className="stall-buy-price">{s.price}</span>
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
-            <button
-              className="gold"
-              onClick={async () => {
-                try {
-                  await api("/shop/buy", { method: "POST", body: { id: s.id } });
-                  await reload();
-                } catch (e) {
-                  setErr(te(e instanceof Error ? e.message : "No"));
-                }
-              }}
-            >
-              {t("buy", { price: s.price })}
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {hover ? <ItemTooltip item={hover.item} x={hover.x} y={hover.y} charLevel={charLevel} /> : null}
-      <div className="row" style={{ marginTop: 8 }}>
-        <button
-          onClick={async () => {
-            try {
-              await api("/shop/refresh", { method: "POST" });
-              await reload();
-            } catch (e) {
-              setErr(te(e instanceof Error ? e.message : "No"));
-            }
-          }}
-        >
-          {t("refresh", { cost: String(shop.refreshCost) })}
+      <div className="stall-actions">
+        <HoverHint as="span" title={t("refreshAction")} text={t("stallTipRefresh")}>
+          <button
+            type="button"
+            className="stall-act"
+            disabled={!canManage}
+            onClick={async () => {
+              try {
+                await api("/shop/refresh", { method: "POST" });
+                await reload();
+              } catch (e) {
+                setErr(te(e instanceof Error ? e.message : "No"));
+              }
+            }}
+          >
+            <span>{t("refreshAction")}</span>
+            <em>{shop.refreshCost}</em>
+          </button>
+        </HoverHint>
+        <HoverHint as="span" title={t("widenAction")} text={t("stallTipWiden")}>
+          <button
+            type="button"
+            className="stall-act"
+            disabled={!canManage}
+            onClick={async () => {
+              try {
+                await api("/shop/upgrade", { method: "POST" });
+                await reload();
+              } catch (e) {
+                setErr(te(e instanceof Error ? e.message : "No"));
+              }
+            }}
+          >
+            <span>{t("widenAction")}</span>
+            <em>{shop.upgradeCost}</em>
+          </button>
+        </HoverHint>
+        <button type="button" className="stall-act ghost" onClick={onClose}>
+          <span>{t("back")}</span>
         </button>
-        <button
-          onClick={async () => {
-            try {
-              await api("/shop/upgrade", { method: "POST" });
-              await reload();
-            } catch (e) {
-              setErr(te(e instanceof Error ? e.message : "No"));
-            }
-          }}
-        >
-          {t("widenStall", { cost: String(shop.upgradeCost) })}
-        </button>
-        <button onClick={onClose}>{t("back")}</button>
       </div>
     </div>
   );
@@ -1294,156 +1693,375 @@ function AuctionView({
   const [pick, setPick] = useState(pack[0]?.id || "");
   const [hover, setHover] = useState<{ item: Item; x: number; y: number } | null>(null);
   return (
-    <div className="panel center-pane" style={{ padding: 16 }}>
-      <div className="section-title">{t("boardTitle", { cap: String(data.cap) })}</div>
-      <p className="muted">
-        {t("boardFees", { fee12: (Number(data.fee12) * 100).toFixed(0), fee24: (Number(data.fee24) * 100).toFixed(0) })}
-      </p>
-      <div className="row">
-        <select value={pick} onChange={(e) => setPick(e.target.value)}>
-          {pack.map((p) => (
-            <option key={p.id} value={p.id}>
-              {itemName(p)}
-            </option>
-          ))}
-        </select>
-        <input value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 100 }} />
-        <button onClick={() => setHours(12)}>12h</button>
-        <button onClick={() => setHours(24)}>24h</button>
-        <button
-          className="gold"
-          onClick={async () => {
-            try {
-              await onList(pick);
-            } catch (e) {
-              setErr(te(e instanceof Error ? e.message : "No"));
-            }
-          }}
-        >
-          {t("nailIt", { hours })}
+    <div className="panel center-pane stall-pane">
+      <div className="stall-head">
+        <div className="stall-head-ico" aria-hidden>
+          ⚔
+        </div>
+        <div className="stall-head-copy">
+          <h2>{t("boardTitle", { cap: String(data.cap) })}</h2>
+          <p>{t("boardFees", { fee12: (Number(data.fee12) * 100).toFixed(0), fee24: (Number(data.fee24) * 100).toFixed(0) })}</p>
+        </div>
+      </div>
+      <div className="board-post">
+        <div className="board-post-label">{t("boardPost")}</div>
+        <div className="board-post-row">
+          <select value={pick} onChange={(e) => setPick(e.target.value)}>
+            {pack.map((p) => (
+              <option key={p.id} value={p.id}>
+                {itemName(p)}
+              </option>
+            ))}
+          </select>
+          <input value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 100 }} />
+          <button type="button" className={hours === 12 ? "gold" : ""} onClick={() => setHours(12)}>
+            12h
+          </button>
+          <button type="button" className={hours === 24 ? "gold" : ""} onClick={() => setHours(24)}>
+            24h
+          </button>
+          <button
+            type="button"
+            className="stall-act"
+            onClick={async () => {
+              try {
+                await onList(pick);
+              } catch (e) {
+                setErr(te(e instanceof Error ? e.message : "No"));
+              }
+            }}
+          >
+            <span>{t("nailIt", { hours })}</span>
+          </button>
+        </div>
+      </div>
+      <div className="board-list">
+        {listings.length === 0 ? <div className="stall-empty">{t("boardEmpty")}</div> : null}
+        {listings.map((l) => (
+          <div key={l.id} className={`stall-card r-${l.item.rarity}`}>
+            <div
+              className={`cell has-item r-${l.item.rarity} stall-slot`}
+              onMouseEnter={(e) => setHover({ item: l.item, x: e.clientX, y: e.clientY })}
+              onMouseMove={(e) => setHover({ item: l.item, x: e.clientX, y: e.clientY })}
+              onMouseLeave={() => setHover(null)}
+            >
+              <ItemFace item={l.item} />
+            </div>
+            <div className="stall-card-copy">
+              <b>{itemName(l.item)}</b>
+              <div className="muted">
+                {t(`rarity_${l.item.rarity}`)} · {l.seller_name} · {Math.max(0, Math.round((l.expires_at - Date.now()) / 60000))}m
+              </div>
+            </div>
+            <button
+              type="button"
+              className="stall-buy"
+              onClick={async () => {
+                try {
+                  await onBuy(l.id);
+                } catch (e) {
+                  setErr(te(e instanceof Error ? e.message : "No"));
+                }
+              }}
+            >
+              <span className="stall-buy-qty">{t("buyAction")}</span>
+              <span className="stall-buy-price">{l.price}</span>
+            </button>
+          </div>
+        ))}
+      </div>
+      {hover ? <ItemTooltip item={hover.item} x={hover.x} y={hover.y} charLevel={charLevel} /> : null}
+      <div className="stall-actions">
+        <button type="button" className="stall-act ghost" onClick={onClose}>
+          <span>{t("back")}</span>
         </button>
       </div>
-      <table className="board-table" style={{ width: "100%", marginTop: 12, fontSize: "0.9rem", borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ color: "var(--gold)", textAlign: "left" }}>
-            <th></th>
-            <th>{t("item")}</th>
-            <th>{t("rarity")}</th>
-            <th>{t("seller")}</th>
-            <th>{t("price")}</th>
-            <th>{t("time")}</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {listings.map((l) => (
-            <tr key={l.id} style={{ borderBottom: "1px solid #3a2a1a" }}>
-              <td>
-                <div
-                  className={`cell has-item r-${l.item.rarity} board-slot`}
-                  onMouseEnter={(e) => setHover({ item: l.item, x: e.clientX, y: e.clientY })}
-                  onMouseMove={(e) => setHover({ item: l.item, x: e.clientX, y: e.clientY })}
-                  onMouseLeave={() => setHover(null)}
-                >
-                  <ItemFace item={l.item} />
-                </div>
-              </td>
-              <td>{itemName(l.item)}</td>
-              <td>{t(`rarity_${l.item.rarity}`)}</td>
-              <td>{l.seller_name}</td>
-              <td>{l.price}</td>
-              <td>{Math.max(0, Math.round((l.expires_at - Date.now()) / 60000))}m</td>
-              <td>
-                <button
-                  onClick={async () => {
-                    try {
-                      await onBuy(l.id);
-                    } catch (e) {
-                      setErr(te(e instanceof Error ? e.message : "No"));
-                    }
-                  }}
-                >
-                  {t("buyAction")}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {hover ? <ItemTooltip item={hover.item} x={hover.x} y={hover.y} charLevel={charLevel} /> : null}
-      <button style={{ marginTop: 8 }} onClick={onClose}>
-        {t("back")}
-      </button>
     </div>
   );
+}
+
+type GuildMember = {
+  rank: string;
+  joined_at: number;
+  username: string;
+  id: string;
+  character_name: string | null;
+  character_level: number | null;
+  character_class: string | null;
+};
+
+type PublicGuild = {
+  id: string;
+  name: string;
+  tag: string;
+  description: string;
+  emblem: string;
+  level: number;
+  leader_user_id: string;
+  created_at: number;
+  roster?: GuildMember[];
+  memberCount?: number;
+  members: number;
+  cap: number;
+  leaderName: string;
+  upgradeCost: number;
+};
+
+const GUILD_EMBLEMS = ["wolf", "raven", "oak", "sword", "crown", "stag"] as const;
+const EMBLEM_MARK: Record<string, string> = {
+  wolf: "🐺",
+  raven: "✦",
+  oak: "❖",
+  sword: "⚔",
+  crown: "♔",
+  stag: "♜",
+};
+
+function emblemMark(id: string) {
+  return EMBLEM_MARK[id] || "🛡";
+}
+
+function fmtDay(ts: number) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
 }
 
 function GuildView({
   list,
   mine,
+  userId,
   reload,
   onClose,
   setErr,
 }: {
   list: Record<string, unknown> | null;
   mine: Record<string, unknown> | null;
+  userId: string;
   reload: () => Promise<void>;
   onClose: () => void;
   setErr: (s: string) => void;
 }) {
   const { t, te } = useI18n();
-  const [form, setForm] = useState({ name: "", tag: "", description: "A company of the road.", emblem: "wolf" });
-  const guilds = (list?.guilds as { id: string; name: string; tag: string; members: number; level: number }[]) || [];
-  const g = mine?.guild as { name: string; tag: string; level: number; description: string } | null;
+  const [form, setForm] = useState({ name: "", tag: "", description: "", emblem: "wolf" });
+  const [pick, setPick] = useState<string | null>(null);
+  const guilds = (list?.guilds as PublicGuild[]) || [];
+  const mineId = (mine?.guild as { id?: string } | null)?.id || null;
+  const selected = guilds.find((g) => g.id === pick) || guilds[0] || null;
+
+  useEffect(() => {
+    if (!guilds.length) {
+      if (pick) setPick(null);
+      return;
+    }
+    if (pick && guilds.some((g) => g.id === pick)) return;
+    setPick(guilds[0]!.id);
+  }, [guilds, pick]);
+
+  const roster = selected?.roster || [];
+  const count = selected ? selected.memberCount ?? selected.members ?? roster.length : 0;
+  const cap = selected?.cap || 0;
+  const full = cap > 0 && count >= cap;
+  const inSelected = !!(selected && mineId === selected.id);
+  const isLeader = !!(selected && selected.leader_user_id === userId);
+  const canJoin = !!selected && !mineId && !full;
+
+  async function act(fn: () => Promise<unknown>) {
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "No"));
+    }
+  }
+
   return (
-    <div className="panel center-pane" style={{ padding: 16 }}>
-      <div className="section-title">{t("hallTitle")}</div>
-      {g ? (
-        <div>
-          <h3>
-            [{g.tag}] {g.name} · {t("hallLv", { level: g.level })}
-          </h3>
-          <p>{g.description}</p>
-          <p className="muted">{t("roster", { n: String((mine?.members as unknown[])?.length ?? 0), cap: String(mine?.cap) })}</p>
-          <button onClick={async () => { await api("/guild/upgrade", { method: "POST" }); reload(); }}>{t("raiseWalls", { cost: String(mine?.upgradeCost) })}</button>
-          <button className="danger" onClick={async () => { await api("/guild/leave", { method: "POST" }); reload(); }}>
-            {t("leaveBanner")}
-          </button>
+    <div className="panel center-pane stall-pane guild-hall">
+      <div className="stall-head">
+        <div className="stall-head-ico" aria-hidden>
+          🛡
         </div>
-      ) : (
-        <>
-          <p className="muted">
-            {t("foundingHint", { region: String(list?.requiredRegion), cost: String(list?.cost) })}
-          </p>
-          <div className="row">
+        <div className="stall-head-copy">
+          <h2>{t("hallTitle")}</h2>
+          <p>{t("guildHint")}</p>
+        </div>
+      </div>
+      <div className="guild-split">
+        <aside className="guild-rail">
+          <div className="guild-rail-head">{t("guildList")}</div>
+          <div className="guild-rail-list">
+            {guilds.length === 0 ? <div className="stall-empty">{t("guildEmpty")}</div> : null}
+            {guilds.map((g) => {
+              const n = g.memberCount ?? g.members ?? g.roster?.length ?? 0;
+              const on = selected?.id === g.id;
+              const yours = mineId === g.id;
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={`guild-row${on ? " on" : ""}${yours ? " yours" : ""}`}
+                  onClick={() => setPick(g.id)}
+                >
+                  <div className="guild-row-ico" aria-hidden>
+                    {emblemMark(g.emblem)}
+                  </div>
+                  <div className="guild-row-body">
+                    <div className="guild-row-name">
+                      [{g.tag}] {g.name}
+                    </div>
+                    <div className="guild-row-stat">
+                      {t("roster", { n: String(n), cap: String(g.cap) })}
+                    </div>
+                    <div className="guild-row-meta">{t("hallLv", { level: g.level })}</div>
+                  </div>
+                  {yours ? <span className="guild-row-mark">{t("guildYours")}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+        <section className="guild-sheet">
+          {selected ? (
+            <>
+              <div className="guild-sheet-top">
+                <div className="guild-sheet-ico" aria-hidden>
+                  {emblemMark(selected.emblem)}
+                </div>
+                <div className="guild-sheet-title">
+                  <div className="guild-sheet-name">
+                    [{selected.tag}] {selected.name}
+                  </div>
+                  <div className="guild-sheet-flags">
+                    {inSelected ? <span className="guild-flag yours">{t("guildYours")}</span> : null}
+                    <span className={`guild-flag ${full ? "full" : "open"}`}>{full ? t("guildFull") : t("guildOpen")}</span>
+                    <span className="guild-flag">{t(`guildEmblem_${selected.emblem}`) || selected.emblem}</span>
+                  </div>
+                </div>
+              </div>
+              <p className="guild-desc">{selected.description?.trim() || t("guildNoDesc")}</p>
+              <div className="guild-facts">
+                <div className="guild-fact">
+                  <div className="guild-fact-lab">{t("guildLeader")}</div>
+                  <div className="guild-fact-val">{selected.leaderName || "—"}</div>
+                </div>
+                <div className="guild-fact">
+                  <div className="guild-fact-lab">{t("guildMembersTitle")}</div>
+                  <div className="guild-fact-val">
+                    {count} / {cap}
+                  </div>
+                </div>
+                <div className="guild-fact">
+                  <div className="guild-fact-lab">{t("guildHall")}</div>
+                  <div className="guild-fact-val">{selected.level}</div>
+                </div>
+                <div className="guild-fact">
+                  <div className="guild-fact-lab">{t("guildFounded")}</div>
+                  <div className="guild-fact-val">{fmtDay(selected.created_at)}</div>
+                </div>
+              </div>
+              <p className="muted guild-seats">{t("guildSeats", { free: Math.max(0, cap - count) })}</p>
+              <div className="guild-roster-head">{t("guildMembersTitle")}</div>
+              <div className="guild-roster">
+                {roster.length === 0 ? <div className="stall-empty">{t("guildEmpty")}</div> : null}
+                {roster.map((m) => {
+                  const cls = m.character_class ? t(`class_${m.character_class}`) : "";
+                  return (
+                    <div key={m.id} className={`guild-member${m.id === userId ? " me" : ""}${m.rank === "leader" ? " lead" : ""}`}>
+                      <span className={`guild-rank r-${m.rank}`}>{t(`guildRank_${m.rank}`) || m.rank}</span>
+                      <div className="guild-member-body">
+                        <b>
+                          {m.username}
+                          {m.id === userId ? <em> · {t("guildYou")}</em> : null}
+                        </b>
+                        <span>
+                          {m.character_name
+                            ? `${m.character_name}${cls ? ` · ${cls}` : ""}${m.character_level != null ? ` · ${t("itemReqShort", { n: m.character_level })}` : ""}`
+                            : t("guildNoChar")}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="guild-acts">
+                {canJoin ? (
+                  <button type="button" className="stall-act" onClick={() => void act(() => api(`/guilds/${selected.id}/join`, { method: "POST" }))}>
+                    <span>{t("join")}</span>
+                  </button>
+                ) : null}
+                {inSelected && isLeader ? (
+                  <button type="button" className="stall-act" onClick={() => void act(() => api("/guild/upgrade", { method: "POST" }))}>
+                    <span>{t("raiseWalls", { cost: String(selected.upgradeCost) })}</span>
+                  </button>
+                ) : null}
+                {inSelected ? (
+                  <button type="button" className="stall-act danger" onClick={() => void act(() => api("/guild/leave", { method: "POST" }))}>
+                    <span>{t("leaveBanner")}</span>
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <div className="stall-empty">{t("guildEmpty")}</div>
+          )}
+        </section>
+      </div>
+      {!mineId && list ? (
+        <div className="guild-found">
+          <div className="guild-found-head">{t("guildFoundTitle")}</div>
+          <p className="muted">{t("foundingHint", { region: String(list?.requiredRegion ?? ""), cost: String(list?.cost ?? "") })}</p>
+          <div className="guild-found-row">
             <input placeholder={t("name")} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <input placeholder={t("tag")} value={form.tag} onChange={(e) => setForm({ ...form, tag: e.target.value })} />
+            <input
+              className="guild-tag"
+              placeholder={t("tag")}
+              value={form.tag}
+              onChange={(e) => setForm({ ...form, tag: e.target.value.toUpperCase() })}
+              maxLength={5}
+            />
+          </div>
+          <textarea
+            className="guild-found-desc"
+            placeholder={t("guildDesc")}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            rows={2}
+            maxLength={280}
+          />
+          <div className="guild-emblems" role="group" aria-label={t("guildEmblem")}>
+            {GUILD_EMBLEMS.map((id) => (
+              <button
+                key={id}
+                type="button"
+                className={`guild-emblem${form.emblem === id ? " on" : ""}`}
+                title={t(`guildEmblem_${id}`)}
+                onClick={() => setForm({ ...form, emblem: id })}
+              >
+                <span aria-hidden>{emblemMark(id)}</span>
+                {t(`guildEmblem_${id}`)}
+              </button>
+            ))}
           </div>
           <button
-            onClick={async () => {
-              try {
-                await api("/guilds", { method: "POST", body: form });
-                await reload();
-              } catch (e) {
-                setErr(te(e instanceof Error ? e.message : "No"));
-              }
-            }}
+            type="button"
+            className="stall-act"
+            onClick={() =>
+              void act(async () => {
+                const r = (await api("/guilds", { method: "POST", body: form })) as { id?: string };
+                if (r.id) setPick(r.id);
+              })
+            }
           >
-            {t("foundCompany")}
+            <span>{t("foundCompany")}</span>
+            <em>{String(list?.cost ?? "")}</em>
           </button>
-          {guilds.map((x) => (
-            <div key={x.id} className="row" style={{ marginTop: 6 }}>
-              <span>
-                [{x.tag}] {x.name} ({x.members}) lv{x.level}
-              </span>
-              <button onClick={async () => { await api(`/guilds/${x.id}/join`, { method: "POST" }); reload(); }}>{t("join")}</button>
-            </div>
-          ))}
-        </>
-      )}
-      <button style={{ marginTop: 8 }} onClick={onClose}>
-        {t("back")}
-      </button>
+        </div>
+      ) : null}
+      <div className="stall-actions">
+        <button type="button" className="stall-act ghost" onClick={onClose}>
+          <span>{t("back")}</span>
+        </button>
+      </div>
     </div>
   );
 }

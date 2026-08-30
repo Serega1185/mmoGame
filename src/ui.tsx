@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Item } from "./api";
 import { PCT, STAT_KEYS, STAT_LABEL } from "./api";
 import { useI18n } from "./i18n";
@@ -63,8 +63,52 @@ export function statEntries(stats: Record<string, number>) {
   return out;
 }
 
+export function HintTooltip({ title, text, x, y }: { title?: string; text: string; x: number; y: number }) {
+  return (
+    <div
+      className="tooltip parchment tip-short"
+      style={{ left: Math.min(x + 12, window.innerWidth - 280), top: Math.min(y + 14, window.innerHeight - 140) }}
+    >
+      {title ? <strong>{title}</strong> : null}
+      <div className={title ? "muted" : undefined} style={title ? { marginTop: 4 } : undefined}>
+        {text}
+      </div>
+    </div>
+  );
+}
+
+export function HoverHint({
+  title,
+  text,
+  className,
+  as: Tag = "div",
+  children,
+}: {
+  title?: string;
+  text: string;
+  className?: string;
+  as?: "div" | "span";
+  children: ReactNode;
+}) {
+  const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <Tag
+        className={className}
+        onMouseEnter={(e) => setTip({ x: e.clientX, y: e.clientY })}
+        onMouseMove={(e) => setTip({ x: e.clientX, y: e.clientY })}
+        onMouseLeave={() => setTip(null)}
+      >
+        {children}
+      </Tag>
+      {tip ? <HintTooltip title={title} text={text} x={tip.x} y={tip.y} /> : null}
+    </>
+  );
+}
+
 export function ItemTooltip({ item, x, y, charLevel }: { item: Item; x: number; y: number; charLevel?: number }) {
-  const { t, itemName, setName } = useI18n();
+  const { t, itemName, itemFlavor, setName } = useI18n();
+  const flavor = itemFlavor(item);
   const [alt, setAlt] = useState(false);
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -86,9 +130,10 @@ export function ItemTooltip({ item, x, y, charLevel }: { item: Item; x: number; 
   const locked = charLevel != null && item.required_level > charLevel;
   const school = item.magicSchool || (item.definition.tags || []).find((x) => x === "chain" || x === "fire" || x === "frost");
   return (
-    <div className={`tooltip parchment r-${item.rarity}`} style={{ left: Math.min(x + 12, window.innerWidth - 300), top: Math.min(y + 12, window.innerHeight - 340) }}>
+    <div className={`tooltip parchment item-tip r-${item.rarity}`} style={{ left: Math.min(x + 12, window.innerWidth - 300), top: Math.min(y + 12, window.innerHeight - 340) }}>
       <div className="rarity">{t(`rarity_${item.rarity}`)}</div>
       <strong>{itemName(item)}</strong>
+      {flavor ? <div className="muted">{flavor}</div> : null}
       {school ? (
         <div className="school-block">
           <div>{t(`school_${school}`)}</div>
@@ -176,11 +221,15 @@ export function SetTooltip({ set: s, x, y }: { set: SetTip; x: number; y: number
 }
 
 export function ItemFace({ item }: { item: Item }) {
-  const { itemName } = useI18n();
+  const { t, itemName } = useI18n();
   const name = itemName(item);
+  const glyph = item.definition.glyph;
+  const ore = !item.definition.icon && (glyph === "stone" || (item.definition.tags || []).includes("ore"));
+  const req = Math.max(1, Number(item.required_level) || 1);
   return (
     <div className={`item-tile r-${item.rarity}`}>
-      <img className="item-art" src={itemIconSrc(item)} alt={name} draggable={false} />
+      {ore ? <Glyph kind="stone" size={32} /> : <img className="item-art" src={itemIconSrc(item)} alt={name} draggable={false} />}
+      <span className="item-req">{t("itemReqShort", { n: req })}</span>
     </div>
   );
 }

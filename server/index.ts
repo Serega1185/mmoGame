@@ -12,7 +12,8 @@ import { flattenToOneCell, reflowInventories } from "./engine/inventory.ts";
 import { authOptional } from "./auth.ts";
 import { api } from "./routes/api.ts";
 import { attachWs } from "./wsHub.ts";
-import { expireAuctions } from "./game.ts";
+import { expireAuctions, restockDueShops } from "./game.ts";
+import { broadcast } from "./wsHub.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -20,15 +21,20 @@ const root = path.join(__dirname, "..");
 seedIfEmpty();
 flattenToOneCell();
 reflowInventories();
-expireAuctions();
-setInterval(expireAuctions, 30_000);
+function tickWorld() {
+  expireAuctions();
+  for (const depth of restockDueShops()) broadcast({ type: "shop", depth });
+}
+tickWorld();
+setInterval(tickWorld, 15_000);
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "4mb" }));
 app.use(cookieParser());
 app.use(authOptional);
 app.use("/api", api);
+app.use("/assets/custom", express.static(path.join(root, "data", "item-icons")));
 app.use("/assets", express.static(path.join(root, "assets")));
 
 const httpServer = createServer(app);

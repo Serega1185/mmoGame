@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Item } from "./api";
 import { ItemFace, ItemTooltip } from "./ui";
 
@@ -21,6 +21,11 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 70, charLevel, o
   const [drag, setDrag] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [lit, setLit] = useState<number | null>(null);
+
+  useEffect(() => {
+    setHover((h) => (h && items.some((it) => it.id === h.item.id) ? h : null));
+    setSelected((id) => (id && items.some((it) => it.id === id) ? id : null));
+  }, [items]);
 
   const occupied = useMemo(() => {
     const g: (string | null)[][] = Array.from({ length: rows }, () => Array(cols).fill(null));
@@ -66,6 +71,7 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 70, charLevel, o
                   e.dataTransfer.setData("text/item", origin.id);
                   e.dataTransfer.setData("text/dest", dest);
                   setDrag(origin.id);
+                  setHover(null);
                 }}
                 onClick={(e) => {
                   if (e.ctrlKey || e.metaKey) {
@@ -74,11 +80,16 @@ export function InventoryGrid({ cols, rows, items, dest, cell = 70, charLevel, o
                     return;
                   }
                   setSelected(origin.id);
+                  setHover(null);
                   onPick?.(origin);
                 }}
-                onDoubleClick={() => onEquip?.(origin)}
+                onDoubleClick={() => {
+                  setHover(null);
+                  onEquip?.(origin);
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
+                  setHover(null);
                   onContext?.(origin);
                 }}
                 onMouseEnter={(e) => setHover({ item: origin, x: e.clientX, y: e.clientY })}

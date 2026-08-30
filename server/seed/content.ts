@@ -336,6 +336,37 @@ const magicArms: typeof weapons = [
 ];
 for (const w of magicArms) add({ ...w, affix_pool: [], stackable: 0, max_stack: 1, sell_mult: 1 });
 
+const ores: { id: string; name: string; rarity_min: string; flavor: string }[] = [
+  { id: "ore_copper", name: "Copper Ore", rarity_min: "Common", flavor: "Soft metal, stubborn rock." },
+  { id: "ore_iron", name: "Iron Ore", rarity_min: "Uncommon", flavor: "The road's true blood." },
+  { id: "ore_gold", name: "Gold Ore", rarity_min: "Rare", flavor: "It remembers kings." },
+  { id: "ore_mithril", name: "Mithril Ore", rarity_min: "Epic", flavor: "Light as a lie, hard as a vow." },
+  { id: "ore_adamantite", name: "Adamantite Ore", rarity_min: "Legendary", flavor: "The mountain's last argument." },
+  { id: "ore_titanium", name: "Titanium Ore", rarity_min: "Mythic", flavor: "Sky-metal, buried wrong." },
+];
+for (const o of ores) {
+  add({
+    id: o.id,
+    name: o.name,
+    category: "ore",
+    slot: null,
+    rarity_min: o.rarity_min,
+    base_level: 1,
+    required_level: 1,
+    width: 1,
+    height: 1,
+    stackable: 0,
+    max_stack: 1,
+    base_stats: {},
+    affix_pool: [],
+    set_id: null,
+    glyph: "stone",
+    flavor: o.flavor,
+    tags: ["ore"],
+    sell_mult: 0.4,
+  });
+}
+
 for (const d of ITEM_DEFS) {
   const magic = d.tags.includes("magic");
   let stats = exclusiveDamage(sanitizeStats(d.base_stats as Record<string, number>), magic);

@@ -12,7 +12,7 @@ export function LootPick({
 }: {
   items: Item[];
   charLevel: number;
-  onDone: () => Promise<void>;
+  onDone: (ore?: Item | null) => Promise<void>;
   setErr: (s: string) => void;
 }) {
   const { t, te, itemName } = useI18n();
@@ -24,8 +24,8 @@ export function LootPick({
     if (busy) return;
     setBusy(true);
     try {
-      await api("/game/loot", { method: "POST", body: { instanceId: id } });
-      await onDone();
+      const r = await api<{ ore?: Item | null }>("/game/loot", { method: "POST", body: { instanceId: id } });
+      await onDone(r.ore);
     } catch (e) {
       setErr(te(e instanceof Error ? e.message : "Denied"));
     } finally {

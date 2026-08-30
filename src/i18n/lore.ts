@@ -110,6 +110,12 @@ export const ITEMS: Record<string, Triple> = {
   dark_greaves: { en: ["Night Greaves", "Soft iron, quieter steps."], ru: ["Ночные поножи", "Мягкое железо, тише шаги."], zh: ["夜护胫", "软铁，更静的脚步。"] },
   king_ring: { en: ["Hollow Crown Ring", "A kingdom reduced to jewelry."], ru: ["Перстень полой короны", "Королевство, сжатое до украшения."], zh: ["空冕之戒", "一整国缩成饰品。"] },
   myth_amulet: { en: ["Ashmarch Seal", "The road itself, waxed and sealed."], ru: ["Печать Ашмарша", "Сама дорога, залитая воском."], zh: ["灰烬行军印", "道路本身，封了蜡。"] },
+  ore_copper: { en: ["Copper Ore", "Soft metal, stubborn rock."], ru: ["Медная руда", "Мягкий металл, упрямый камень."], zh: ["铜矿石", "软金属，硬石头。"] },
+  ore_iron: { en: ["Iron Ore", "The road's true blood."], ru: ["Железная руда", "Настоящая кровь дороги."], zh: ["铁矿石", "道路真正的血。"] },
+  ore_gold: { en: ["Gold Ore", "It remembers kings."], ru: ["Золотая руда", "Она помнит королей."], zh: ["金矿石", "它记得国王。"] },
+  ore_mithril: { en: ["Mithril Ore", "Light as a lie, hard as a vow."], ru: ["Мифриловая руда", "Лёгкая как ложь, твёрдая как обет."], zh: ["秘银矿石", "轻如谎言，硬如誓言。"] },
+  ore_adamantite: { en: ["Adamantite Ore", "The mountain's last argument."], ru: ["Адамантитовая руда", "Последний довод горы."], zh: ["精金矿石", "山的最后一辩。"] },
+  ore_titanium: { en: ["Titanium Ore", "Sky-metal, buried wrong."], ru: ["Титановая руда", "Небесный металл, закопанный не там."], zh: ["钛矿石", "天金，埋错了地方。"] },
 };
 
 export const SETS: Record<string, Triple> = {

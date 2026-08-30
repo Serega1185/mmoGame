@@ -6,6 +6,7 @@ export type MarchNodeView = {
   floor: number;
   col: number;
   kind: string;
+  ore?: string;
   next: string[];
 };
 
@@ -35,6 +36,7 @@ function NodeIcon({ kind }: { kind: string }) {
   if (kind === "boss") return <text {...props}>☠</text>;
   if (kind === "elite") return <text {...props}>♛</text>;
   if (kind === "loot") return <text {...props}>◆</text>;
+  if (kind === "mine") return <text {...props} className="map-glyph map-glyph-mine">⛏</text>;
   return <text {...props}>⚔</text>;
 }
 
@@ -58,7 +60,7 @@ export function MarchMap({
   const panned = useRef(false);
   const scaleRef = useRef(1);
   const [scale, setScale] = useState(1);
-  const [tip, setTip] = useState<{ kind: string; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState<{ kind: string; ore?: string; x: number; y: number } | { pack: true; x: number; y: number } | null>(null);
 
   useEffect(() => {
     scaleRef.current = scale;
@@ -121,8 +123,15 @@ export function MarchMap({
       <div className="section-title">{t("mapTitle")}</div>
       <p className="muted map-hint">{t("mapHint")}</p>
       <div className="march-pan" ref={panBox} onMouseDown={onPanDown}>
-        <div className="pack-odds" title={t("packOddsTip", { two: packTwo, three: packThree })}>
-          {t("packOddsShort", { two: packTwo, three: packThree })}
+        <div
+          className="pack-odds"
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseEnter={(e) => setTip({ pack: true, x: e.clientX, y: e.clientY })}
+          onMouseMove={(e) => setTip((cur) => (cur && "pack" in cur ? { pack: true, x: e.clientX, y: e.clientY } : cur))}
+          onMouseLeave={() => setTip(null)}
+        >
+          <div>{t("packOddsTwo", { n: packTwo })}</div>
+          <div>{t("packOddsThree", { n: packThree })}</div>
         </div>
         <svg className="march-svg" viewBox={`0 0 ${W} ${H}`} role="img" style={{ width: W * scale, height: H * scale }}>
           {march.nodes.flatMap((n) =>
@@ -157,8 +166,12 @@ export function MarchMap({
                   if (panned.current) return;
                   if (interactive && reach) onPick(n.id);
                 }}
-                onMouseEnter={(e) => setTip({ kind: n.kind, x: e.clientX, y: e.clientY })}
-                onMouseMove={(e) => setTip((cur) => (cur ? { ...cur, x: e.clientX, y: e.clientY } : { kind: n.kind, x: e.clientX, y: e.clientY }))}
+                onMouseEnter={(e) => setTip({ kind: n.kind, ore: n.ore, x: e.clientX, y: e.clientY })}
+                onMouseMove={(e) =>
+                  setTip((cur) =>
+                    cur && "kind" in cur ? { ...cur, x: e.clientX, y: e.clientY } : { kind: n.kind, ore: n.ore, x: e.clientX, y: e.clientY }
+                  )
+                }
                 onMouseLeave={() => setTip(null)}
                 style={{ cursor: interactive && reach ? "pointer" : "default" }}
               >
@@ -170,13 +183,24 @@ export function MarchMap({
           })}
         </svg>
       </div>
-      {tip ? (
+      {tip && "pack" in tip ? (
+        <div
+          className="tooltip parchment tip-short map-node-tip"
+          style={{ left: Math.min(tip.x + 14, window.innerWidth - 280), top: Math.min(tip.y + 14, window.innerHeight - 70) }}
+        >
+          {t("packOddsTip")}
+        </div>
+      ) : tip && "kind" in tip ? (
         <div
           className="tooltip parchment tip-short map-node-tip"
           style={{ left: Math.min(tip.x + 14, window.innerWidth - 260), top: Math.min(tip.y + 14, window.innerHeight - 90) }}
         >
-          <strong>{t(`node_${tip.kind}` as "node_monster")}</strong>
-          <div className="muted">{t(`nodeTip_${tip.kind}` as "nodeTip_monster")}</div>
+          <strong>
+            {tip.kind === "mine" ? t(tip.ore ? (`node_mine_${tip.ore}` as "node_mine_copper") : "node_mine") : t(`node_${tip.kind}` as "node_monster")}
+          </strong>
+          <div className="muted">
+            {tip.kind === "mine" ? t("nodeTip_mine") : t(`nodeTip_${tip.kind}` as "nodeTip_monster")}
+          </div>
         </div>
       ) : null}
     </div>

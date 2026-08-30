@@ -3,6 +3,7 @@ import { db, now } from "../db.ts";
 import { CONFIG } from "../config.ts";
 import { SETS, ITEM_DEFS, SKILLS, REGIONS, ENEMIES } from "./content.ts";
 import { rerollInstanceFromDefinition, type InstanceRow } from "../engine/items.ts";
+import { seedItemI18n } from "../engine/itemCatalog.ts";
 
 function upsertCatalog() {
   const upSet = db.prepare(
@@ -48,7 +49,8 @@ function purgeUnequippableDefs() {
   const rows = db.prepare("SELECT id FROM item_definitions").all() as { id: string }[];
   for (const row of rows) {
     const def = ITEM_DEFS.find((d) => d.id === row.id);
-    const junk = !keep.has(row.id) || !def?.slot;
+    if (!keep.has(row.id)) continue;
+    const junk = def && !def.slot && def.category !== "ore";
     if (!junk) continue;
     const inst = db.prepare("SELECT id FROM item_instances WHERE definition_id = ?").all(row.id) as { id: string }[];
     for (const it of inst) {
@@ -71,6 +73,7 @@ export function refreshCatalog() {
   ).run();
   const rows = db.prepare("SELECT * FROM item_instances WHERE location != 'DESTROYED'").all() as InstanceRow[];
   for (const row of rows) rerollInstanceFromDefinition(row);
+  seedItemI18n();
 }
 
 export function seedIfEmpty() {

@@ -1,8 +1,8 @@
 import { v4 as uuid } from "uuid";
 import { db, now, tx } from "./db.ts";
 import { CONFIG } from "./config.ts";
-import { CLASS_BASE, emptyStats, EQUIP_SLOTS, RARITIES, type Stats } from "./engine/stats.ts";
-import { generateInstance, hydrate, destroyInstance, itemValue, rerollInstanceFromDefinition, type InstanceRow } from "./engine/items.ts";
+import { CLASS_BASE, emptyStats, EQUIP_SLOTS, RARITIES, sanitizeStats, STAT_KEYS, type Stats } from "./engine/stats.ts";
+import { generateInstance, hydrate, destroyInstance, itemValue, rerollInstanceFromDefinition, rollRarity, type InstanceRow } from "./engine/items.ts";
 import {
   buildGrid,
   canPlace,
@@ -21,17 +21,29 @@ import { addCoins, spendCoins, logGame } from "./engine/economy.ts";
 import { defaultDropConfig, loadDropConfig, saveDropConfig } from "./engine/dropTables.ts";
 import { loadGate, saveGate } from "./engine/gate.ts";
 import { defaultPackConfig, loadPackConfig, packOddsFor, rollPackExtra, savePackConfig } from "./engine/packTables.ts";
+import { defaultMineConfig, loadMineConfig, ORE_META, oreIdForRarity, saveMineConfig, type OreId } from "./engine/mineTables.ts";
+import {
+  listItemIcons,
+  loadItemCatalog,
+  localesFor,
+  normalizeIcon,
+  saveItemI18n,
+  saveUploadedIcon,
+} from "./engine/itemCatalog.ts";
 import { applyTalentPick, canPickTalent, ensureTalentTree, freshTalentTree } from "./engine/talents.ts";
 import {
   combatKind,
   generateMarch,
   parseMarch,
+  placeMines,
   reachableIds,
   rollMystery,
   toPublicMarch,
   type MarchState,
   type ResolvedKind,
 } from "./engine/march.ts";
+import { addCityTax, ensureCity, hubDepthOf, publicCity, unlockedCityMax } from "./engine/city.ts";
+import { defaultShopConfig, loadShopConfig, saveShopConfig, shopRestockMs, shopWeightsFor } from "./engine/shopTables.ts";
 
 export function publicItem(inst: InstanceRow) {
   return hydrate(inst);
@@ -105,9 +117,9 @@ export function snapshotCharacter(c: Record<string, unknown>) {
   const talentTree = ensureTalentTree(String(c.id), c.talent_tree);
   const talentPoints = Number(c.talent_points || 0);
   const march = ensureMarch(c);
-  c = { ...c, depth: Number(c.depth || 0), round: Number(c.round || 1) };
+  c = { ...c, depth: Number(c.depth || 1), round: Number(c.round || 1) };
   return {
-    character: { ...c, power, talent_points: talentPoints, depth: Number(c.depth || 0) },
+    character: { ...c, power, talent_points: talentPoints, depth: Number(c.depth || 1) },
     march: toPublicMarch(march),
     inventory: inv,
     equipment: eq,
@@ -120,7 +132,8 @@ export function snapshotCharacter(c: Record<string, unknown>) {
     region,
     grid: { cols: CONFIG.GRID_COLS, rows: CONFIG.GRID_ROWS },
     pendingFight: publicPendingFight(march),
-    packOdds: packOddsFor(Number(c.depth || 0)),
+    packOdds: packOddsFor(Math.max(1, Number(c.depth || 1))),
+    city: String(c.location) === "CITY" ? publicCity(c) : null,
   };
 }
 
@@ -134,42 +147,16 @@ export function createCharacter(userId: string, name: string, cls: string) {
   const base = CLASS_BASE[cls as keyof typeof CLASS_BASE];
   const id = uuid();
   const hp = base.health;
-  const march = generateMarch();
+  const march = generateMarch(1);
   db.prepare(
     `INSERT INTO characters (id,user_id,name,class,level,xp,region,round,hp,max_hp,status,location,created_at)
      VALUES (?,?,?,?,1,0,1,1,?,?, 'ALIVE','WILD',?)`
   ).run(id, userId, name.trim(), cls, hp, hp, now());
-  db.prepare("UPDATE characters SET talent_tree = ?, talent_points = 0, depth = 0, map_state = ? WHERE id = ?").run(
+  db.prepare("UPDATE characters SET talent_tree = ?, talent_points = 0, depth = 1, map_state = ? WHERE id = ?").run(
     JSON.stringify(freshTalentTree()),
     JSON.stringify(march),
     id
   );
-  const starters: Record<string, string[]> = {
-    Ironclad: ["peat_shortsword", "wood_buckler", "padded_jack", "iron_cap"],
-    Shadehand: ["ash_knife", "ash_wand", "wool_hood", "hide_jerkin", "clogs"],
-    Thornbow: ["briar_bow", "wool_hood", "padded_jack", "hunter_knife"],
-  };
-  const items = starters[cls] || starters.Ironclad;
-  const inv: InstanceRow[] = [];
-  for (const defId of items!) {
-    const inst = generateInstance({
-      definitionId: defId,
-      ownerUserId: userId,
-      ownerCharacterId: id,
-      location: "INVENTORY",
-      region: 1,
-      forceRarity: "Common",
-    });
-    inv.push(inst);
-  }
-  const grid = buildGrid([]);
-  for (const it of inv) {
-    const spot = findPlace(grid, it);
-    if (spot) {
-      db.prepare("UPDATE item_instances SET grid_x=?, grid_y=?, rotated=? WHERE id=?").run(spot.x, spot.y, spot.rotated, it.id);
-      grid[spot.y]![spot.x] = it.id;
-    }
-  }
   return { error: null, id };
 }
 
@@ -202,6 +189,7 @@ function ensureSideCity(state: MarchState) {
       n.floor !== 10 &&
       n.kind !== "city" &&
       n.kind !== "boss" &&
+      n.kind !== "mine" &&
       !state.visited.includes(n.id) &&
       n.id !== state.current &&
       n.id !== state.pending
@@ -218,7 +206,7 @@ function saveMarch(characterId: unknown, state: MarchState) {
 function ensureMarch(character: Record<string, unknown>): MarchState {
   let state = parseMarch(character.map_state);
   if (!state) {
-    state = generateMarch();
+    state = generateMarch(Math.max(1, Number(character.depth || 1)));
     if (character.location === "CITY") {
       const city = state.nodes.find((n) => n.kind === "city" && n.floor === 5) || state.nodes.find((n) => n.kind === "city");
       if (city) {
@@ -230,6 +218,15 @@ function ensureMarch(character: Record<string, unknown>): MarchState {
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
   } else if (ensureSideCity(state)) {
+    saveMarch(character.id, state);
+    character.map_state = JSON.stringify(state);
+  }
+  if (!state.nodes.some((n) => n.kind === "mine")) {
+    placeMines(state.nodes, Math.max(1, Number(character.depth || 1)), [
+      ...state.visited,
+      state.current || "",
+      state.pending || "",
+    ]);
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
   }
@@ -250,9 +247,9 @@ function finishPendingNode(character: Record<string, unknown>) {
   state.pending = null;
   const resolved = node.resolved || node.kind;
   if (resolved === "boss") {
-    const depth = Number(character.depth || 0) + 1;
-    const region = Math.min(10, Math.max(1, depth + 1));
-    const fresh = generateMarch();
+    const depth = Math.max(1, Number(character.depth || 1) + 1);
+    const region = Math.min(10, depth);
+    const fresh = generateMarch(depth);
     db.prepare("UPDATE characters SET depth = ?, region = ?, round = 1, location = 'WILD', map_state = ? WHERE id = ?").run(
       depth,
       region,
@@ -314,18 +311,25 @@ function toFoe(enemy: EnemyRow) {
   };
 }
 
-function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss", depth: number): EnemyRow[] {
-  const enemy = pickEnemy(regionId, kind) as EnemyRow;
+function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss" | "mine", depth: number): EnemyRow[] {
+  const enemy = pickEnemy(regionId, kind === "mine" ? "normal" : kind) as EnemyRow;
   const pack = [enemy];
+  const region = db.prepare("SELECT enemy_pool FROM regions WHERE id = ?").get(regionId) as { enemy_pool: string };
+  const pool = JSON.parse(region.enemy_pool || "[]") as string[];
+  const addOne = () => {
+    const id = pool[Math.floor(Math.random() * pool.length)];
+    const add = db.prepare("SELECT * FROM enemies WHERE id = ?").get(id) as EnemyRow | undefined;
+    if (add) pack.push(add);
+  };
+  if (kind === "mine") {
+    addOne();
+    const { three } = packOddsFor(depth);
+    if (Math.random() * 100 < three) addOne();
+    return pack;
+  }
   if (kind === "normal") {
     const extra = rollPackExtra(depth);
-    const region = db.prepare("SELECT enemy_pool FROM regions WHERE id = ?").get(regionId) as { enemy_pool: string };
-    const pool = JSON.parse(region.enemy_pool || "[]") as string[];
-    for (let i = 0; i < extra; i++) {
-      const id = pool[Math.floor(Math.random() * pool.length)];
-      const add = db.prepare("SELECT * FROM enemies WHERE id = ?").get(id) as EnemyRow | undefined;
-      if (add) pack.push(add);
-    }
+    for (let i = 0; i < extra; i++) addOne();
   }
   return pack;
 }
@@ -338,6 +342,7 @@ function packView(pack: EnemyRow[]) {
     hp: e.hp,
     maxHp: e.hp,
     damage: e.damage,
+    armor: e.armor,
   }));
 }
 
@@ -357,11 +362,9 @@ function grantLoot(userId: string, character: Record<string, unknown>, power: { 
     region: Number(character.region),
     enemyKind,
     luck: power.stats.luck,
-    depth: Number(character.depth || 0),
+    depth: Number(character.depth || 1),
   });
-  addCoins(userId, loot.gold, "LOOT_REWARD", ref, { region: character.region, round: character.round });
-  db.prepare("UPDATE characters SET gold_earned = gold_earned + ?, loot_pending=? WHERE id=?").run(
-    loot.gold,
+  db.prepare("UPDATE characters SET loot_pending=? WHERE id=?").run(
     JSON.stringify(loot.items.map((it) => it.id)),
     character.id
   );
@@ -399,9 +402,8 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
       region: Number(character.region),
       enemyKind: enemy.kind,
       luck: power.stats.luck,
-      depth: Number(character.depth || 0),
+      depth: Number(character.depth || 1),
     });
-    addCoins(userId, loot.gold, "LOOT_REWARD", `combat:${enemy.id}`, { region: character.region, round: character.round });
     const xpGain = 12 + Number(character.region) * 4 + (enemy.kind === "boss" ? 40 : enemy.kind === "elite" ? 18 : 0);
     let level = Number(character.level);
     let xp = Number(character.xp) + xpGain;
@@ -414,18 +416,34 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
     const newMax = characterPower({ id: String(character.id), class: String(character.class), level }).maxHp;
     const talentGain = enemy.kind === "boss" ? 1 : 0;
     db.prepare(
-      `UPDATE characters SET hp=?, max_hp=?, level=?, xp=?, enemies_defeated = enemies_defeated + 1, gold_earned = gold_earned + ?, loot_pending=?, talent_points = COALESCE(talent_points, 0) + ? WHERE id=?`
+      `UPDATE characters SET hp=?, max_hp=?, level=?, xp=?, enemies_defeated = enemies_defeated + 1, loot_pending=?, talent_points = COALESCE(talent_points, 0) + ? WHERE id=?`
     ).run(
-      Math.min(newMax, result.playerHp + Math.round(newMax * 0.15)),
+      Math.min(newMax, result.playerHp),
       newMax,
       level,
       xp,
-      loot.gold,
       JSON.stringify(loot.items.map((it) => it.id)),
       talentGain,
       character.id
     );
-    if (!loot.items.length) finishPendingNode({ ...character, loot_pending: "[]" });
+    if (!loot.items.length) {
+      const ore = grantMineOre({ ...character, loot_pending: "[]" });
+      finishPendingNode({ ...character, loot_pending: "[]" });
+      return {
+        error: null as string | null,
+        result: {
+          ...result,
+          won: true,
+          enemy,
+          enemies: enemiesOut,
+          gold: loot.gold,
+          loot: loot.items.map(publicItem),
+          xpGain,
+          level,
+          ore: ore ? publicItem(ore) : null,
+        },
+      };
+    }
     return {
       error: null as string | null,
       result: {
@@ -459,7 +477,7 @@ export function startCombat(userId: string) {
     state.pendingFight = null;
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
-    const fight = runCombat(userId, character, pf.kind, pack);
+    const fight = runCombat(userId, character, pf.kind === "mine" ? "normal" : pf.kind, pack);
     if (fight.error) return fight;
     return { error: null, action: "fight" as const, ...(fight.result ?? {}) };
   });
@@ -481,7 +499,7 @@ export function travel(userId: string, nodeId: string) {
     if (node.kind === "mystery" && !node.resolved) {
       resolved = rollMystery();
       node.resolved = resolved;
-    } else if (node.kind === "monster" || node.kind === "elite" || node.kind === "boss" || node.kind === "city") {
+    } else if (node.kind === "monster" || node.kind === "elite" || node.kind === "boss" || node.kind === "city" || node.kind === "mine") {
       resolved = node.kind;
     }
 
@@ -497,7 +515,15 @@ export function travel(userId: string, nodeId: string) {
         class: String(character.class),
         level: Number(character.level),
       });
-      db.prepare("UPDATE characters SET location='CITY', hp=?, max_hp=? WHERE id=?").run(power.maxHp, power.maxHp, character.id);
+      const enterDepth = Math.max(1, Number(character.depth) || 1);
+      db.prepare("UPDATE characters SET location='CITY', hub_depth=?, hp=?, max_hp=? WHERE id=?").run(
+        enterDepth,
+        power.maxHp,
+        power.maxHp,
+        character.id
+      );
+      character.location = "CITY";
+      character.hub_depth = enterDepth;
       finishPendingNode(character);
       return { error: null, action: "city" as const };
     }
@@ -515,8 +541,8 @@ export function travel(userId: string, nodeId: string) {
 
     const ck = combatKind(resolved);
     if (!ck) return { error: "That path is closed." };
-    const pack = pickEncounter(Number(character.region), ck, Number(character.depth || 0));
-    state.pendingFight = { kind: ck, enemyIds: pack.map((e) => e.id) };
+    const pack = pickEncounter(Number(character.region), ck, Math.max(1, Number(character.depth || 1)));
+    state.pendingFight = { kind: ck, enemyIds: pack.map((e) => e.id), ore: node.kind === "mine" ? node.ore : undefined };
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
     const enemies = packView(pack);
@@ -617,9 +643,44 @@ export function pickLoot(userId: string, instanceId: string | null) {
       character.id
     );
     const row = db.prepare("SELECT * FROM characters WHERE id=?").get(character.id) as Record<string, unknown>;
+    const ore = grantMineOre(row);
     finishPendingNode(row);
-    return { error: null };
+    return { error: null, ore: ore ? publicItem(ore) : null };
   });
+}
+
+function grantMineOre(character: Record<string, unknown>): InstanceRow | null {
+  const state = parseMarch(character.map_state);
+  if (!state?.pending) return null;
+  const node = state.nodes.find((n) => n.id === state.pending);
+  if (node?.kind !== "mine" || !node.ore) return null;
+  const meta = ORE_META[node.ore as OreId];
+  if (!meta) return null;
+  const def = db.prepare("SELECT id FROM item_definitions WHERE id = ?").get(meta.defId);
+  if (!def) return null;
+  try {
+    const inst = generateInstance({
+      definitionId: meta.defId,
+      ownerUserId: String(character.user_id),
+      ownerCharacterId: String(character.id),
+      location: "INVENTORY",
+      forceRarity: meta.rarity as "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Mythic",
+    });
+    const items = loadInv(String(character.id)).filter((i) => i.id !== inst.id);
+    const grid = buildGrid(items);
+    const spot = findPlace(grid, inst);
+    if (!spot) {
+      destroyInstance(inst.id);
+      return null;
+    }
+    db.prepare("UPDATE item_instances SET grid_x=?, grid_y=?, rotated=? WHERE id=?").run(spot.x, spot.y, spot.rotated, inst.id);
+    inst.grid_x = spot.x;
+    inst.grid_y = spot.y;
+    inst.rotated = spot.rotated;
+    return inst;
+  } catch {
+    return null;
+  }
 }
 
 export function pickTalent(userId: string, talentId: string) {
@@ -657,6 +718,19 @@ export function leaveCity(userId: string) {
   if (error || !character) return { error };
   if (character.location !== "CITY") return { error: "You are already on the road." };
   db.prepare("UPDATE characters SET location='WILD' WHERE id=?").run(character.id);
+  return { error: null };
+}
+
+export function switchCity(userId: string, depth: number) {
+  const { error, character } = requireAlive(userId);
+  if (error || !character) return { error };
+  if (character.location !== "CITY") return { error: "Leave the road first." };
+  const d = Math.trunc(Number(depth));
+  if (!Number.isFinite(d) || d < 1) return { error: "That city is not charted yet." };
+  const user = db.prepare("SELECT highest_region FROM users WHERE id=?").get(userId) as { highest_region: number };
+  if (d > unlockedCityMax(character, user.highest_region)) return { error: "That city is not charted yet." };
+  ensureCity(d);
+  db.prepare("UPDATE characters SET hub_depth=? WHERE id=?").run(d, character.id);
   return { error: null };
 }
 
@@ -801,52 +875,158 @@ export function rotateItem(userId: string, instanceId: string) {
   return { error: null };
 }
 
-export function shopState(userId: string) {
-  const user = db.prepare("SELECT * FROM users WHERE id=?").get(userId) as { shop_level: number; coins: number };
-  const slots = Math.min(CONFIG.SHOP_MAX_ITEMS, CONFIG.SHOP_START_ITEMS + user.shop_level - 1);
-  let rows = db.prepare("SELECT * FROM shop_items WHERE user_id=?").all(userId) as { id: string; instance_id: string; price: number; slot: number }[];
-  if (rows.length === 0) {
-    refreshShop(userId, true);
-    rows = db.prepare("SELECT * FROM shop_items WHERE user_id=?").all(userId) as typeof rows;
+function shopStockOwner(depth: number) {
+  const city = ensureCity(depth);
+  if (city.owner_user_id) return city.owner_user_id;
+  const admin = db.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").get() as { id: string } | undefined;
+  if (admin) return admin.id;
+  const any = db.prepare("SELECT id FROM users LIMIT 1").get() as { id: string } | undefined;
+  return any?.id ?? null;
+}
+
+function canManageShop(userId: string, depth: number) {
+  const user = db.prepare("SELECT role FROM users WHERE id=?").get(userId) as { role: string } | undefined;
+  if (user?.role === "admin") return true;
+  const city = ensureCity(depth);
+  return !!city.owner_user_id && city.owner_user_id === userId;
+}
+
+function scheduleShopRestock(depth: number, from = now()) {
+  db.prepare("UPDATE cities SET shop_restock_at=? WHERE depth=?").run(from + shopRestockMs(), depth);
+}
+
+function fillCityShop(depth: number, ownerUserId: string) {
+  const city = ensureCity(depth);
+  const old = db.prepare("SELECT instance_id FROM city_shop_items WHERE city_depth=?").all(depth) as { instance_id: string }[];
+  for (const o of old) destroyInstance(o.instance_id);
+  db.prepare("DELETE FROM city_shop_items WHERE city_depth=?").run(depth);
+  const slots = Math.min(CONFIG.SHOP_MAX_ITEMS, CONFIG.SHOP_START_ITEMS + city.shop_level - 1);
+  const defs = db
+    .prepare("SELECT id, rarity_min FROM item_definitions WHERE slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'")
+    .all() as { id: string; rarity_min: string }[];
+  const weights = shopWeightsFor(depth);
+  const minIdxOf = (min: string) => {
+    const i = RARITIES.indexOf(min as (typeof RARITIES)[number]);
+    return i < 0 ? 0 : i;
+  };
+  for (let i = 0; i < slots; i++) {
+    if (!defs.length) break;
+    const rarity = rollRarity(0, undefined, weights);
+    const rIdx = RARITIES.indexOf(rarity);
+    let pool = defs.filter((d) => minIdxOf(d.rarity_min) <= rIdx);
+    if (!pool.length) pool = defs;
+    const def = pool[Math.floor(Math.random() * pool.length)]!;
+    const inst = generateInstance({
+      definitionId: def.id,
+      ownerUserId,
+      location: "SHOP",
+      region: depth,
+      forceRarity: rarity,
+    });
+    const price = Math.round(itemValue(inst) * 2.4);
+    db.prepare("INSERT INTO city_shop_items (id,city_depth,instance_id,price,slot,generated_at) VALUES (?,?,?,?,?,?)").run(
+      uuid(),
+      depth,
+      inst.id,
+      price,
+      i,
+      now()
+    );
   }
-  const items = rows.map((r) => {
-    const inst = db.prepare("SELECT * FROM item_instances WHERE id=?").get(r.instance_id) as InstanceRow;
-    return { ...r, item: publicItem(inst) };
-  });
-  return { slots, level: user.shop_level, items, refreshCost: CONFIG.SHOP_REFRESH_COST, upgradeCost: CONFIG.SHOP_UPGRADE_BASE * user.shop_level };
+  scheduleShopRestock(depth);
+}
+
+function maybeRestockCity(depth: number) {
+  const city = ensureCity(depth);
+  const stock = db.prepare("SELECT COUNT(*) AS c FROM city_shop_items WHERE city_depth=?").get(depth) as { c: number };
+  if (stock.c > 0 && city.shop_restock_at == null) {
+    scheduleShopRestock(depth);
+    return false;
+  }
+  const due = city.shop_restock_at != null && city.shop_restock_at <= now();
+  const never = stock.c === 0 && city.shop_restock_at == null;
+  if (!due && !never) return false;
+  const owner = shopStockOwner(depth);
+  if (!owner) return false;
+  fillCityShop(depth, owner);
+  return true;
+}
+
+export function restockDueShops() {
+  const rows = db.prepare("SELECT depth FROM cities").all() as { depth: number }[];
+  const changed: number[] = [];
+  for (const row of rows) {
+    if (maybeRestockCity(row.depth)) changed.push(row.depth);
+  }
+  return changed;
+}
+
+function publicShop(userId: string, character: Record<string, unknown>) {
+  const depth = hubDepthOf(character);
+  const city = ensureCity(depth);
+  const slots = Math.min(CONFIG.SHOP_MAX_ITEMS, CONFIG.SHOP_START_ITEMS + city.shop_level - 1);
+  const rows = db.prepare("SELECT * FROM city_shop_items WHERE city_depth=? ORDER BY slot").all(depth) as {
+    id: string;
+    instance_id: string;
+    price: number;
+    slot: number;
+  }[];
+  const items = rows
+    .map((r) => {
+      const inst = db.prepare("SELECT * FROM item_instances WHERE id=?").get(r.instance_id) as InstanceRow | undefined;
+      if (!inst) return null;
+      return { ...r, item: publicItem(inst) };
+    })
+    .filter(Boolean);
+  const fresh = db.prepare("SELECT shop_restock_at, shop_level, tax_percent FROM cities WHERE depth=?").get(depth) as {
+    shop_restock_at: number | null;
+    shop_level: number;
+    tax_percent: number;
+  };
+  return {
+    depth,
+    slots,
+    level: fresh.shop_level,
+    items,
+    refreshCost: CONFIG.SHOP_REFRESH_COST,
+    upgradeCost: CONFIG.SHOP_UPGRADE_BASE * fresh.shop_level,
+    taxPercent: fresh.tax_percent,
+    restockAt: fresh.shop_restock_at,
+    restockMinutes: loadShopConfig().restockMinutes,
+    canManage: canManageShop(userId, depth),
+  };
+}
+
+export function shopState(userId: string) {
+  const { error, character } = requireAlive(userId);
+  if (error || !character) {
+    return {
+      slots: 0,
+      level: 1,
+      items: [],
+      refreshCost: CONFIG.SHOP_REFRESH_COST,
+      upgradeCost: 0,
+      taxPercent: 0,
+      restockAt: null,
+      canManage: false,
+      restocked: false,
+    };
+  }
+  const depth = hubDepthOf(character);
+  const restocked = maybeRestockCity(depth);
+  return { ...publicShop(userId, character), restocked };
 }
 
 export function refreshShop(userId: string, free = false) {
   return tx(() => {
+    const { error, character } = requireAlive(userId);
+    if (error || !character) return { error: error || "No living wayfarer on this ledger." };
+    if (character.location !== "CITY") return { error: "The stall is in the city." };
+    const depth = hubDepthOf(character);
+    if (!canManageShop(userId, depth)) return { error: "Only the city ruler may tend the stall." };
     if (!free && !spendCoins(userId, CONFIG.SHOP_REFRESH_COST, "SHOP_REFRESH", "shop")) return { error: "Not enough coins." };
-    const old = db.prepare("SELECT instance_id FROM shop_items WHERE user_id=?").all(userId) as { instance_id: string }[];
-    for (const o of old) destroyInstance(o.instance_id);
-    db.prepare("DELETE FROM shop_items WHERE user_id=?").run(userId);
-    const user = db.prepare("SELECT shop_level, highest_region FROM users WHERE id=?").get(userId) as {
-      shop_level: number;
-      highest_region: number;
-    };
-    const slots = Math.min(CONFIG.SHOP_MAX_ITEMS, CONFIG.SHOP_START_ITEMS + user.shop_level - 1);
-    const defs = db.prepare("SELECT id FROM item_definitions WHERE slot IS NOT NULL AND slot != ''").all() as { id: string }[];
-    for (let i = 0; i < slots; i++) {
-      const def = defs[Math.floor(Math.random() * defs.length)]!;
-      const inst = generateInstance({
-        definitionId: def.id,
-        ownerUserId: userId,
-        location: "SHOP",
-        region: Math.max(1, user.highest_region || 1),
-      });
-      const price = Math.round(itemValue(inst) * 2.4);
-      db.prepare("INSERT INTO shop_items (id,user_id,instance_id,price,slot,generated_at) VALUES (?,?,?,?,?,?)").run(
-        uuid(),
-        userId,
-        inst.id,
-        price,
-        i,
-        now()
-      );
-    }
-    return { error: null };
+    fillCityShop(depth, userId);
+    return { error: null, depth };
   });
 }
 
@@ -855,7 +1035,8 @@ export function buyShop(userId: string, shopItemId: string) {
     const { error, character } = requireAlive(userId);
     if (error || !character) return { error };
     if (character.location !== "CITY") return { error: "The stall is in the city." };
-    const row = db.prepare("SELECT * FROM shop_items WHERE id=? AND user_id=?").get(shopItemId, userId) as
+    const depth = hubDepthOf(character);
+    const row = db.prepare("SELECT * FROM city_shop_items WHERE id=? AND city_depth=?").get(shopItemId, depth) as
       | { instance_id: string; price: number }
       | undefined;
     if (!row) return { error: "Already sold." };
@@ -869,10 +1050,10 @@ export function buyShop(userId: string, shopItemId: string) {
       return { error: "No space in the pack." };
     }
     db.prepare(
-      "UPDATE item_instances SET location='INVENTORY', owner_character_id=?, grid_x=?, grid_y=?, rotated=? WHERE id=?"
-    ).run(character.id, spot.x, spot.y, spot.rotated, inst.id);
-    db.prepare("DELETE FROM shop_items WHERE instance_id=?").run(inst.id);
-    return { error: null };
+      "UPDATE item_instances SET location='INVENTORY', owner_user_id=?, owner_character_id=?, grid_x=?, grid_y=?, rotated=? WHERE id=?"
+    ).run(userId, character.id, spot.x, spot.y, spot.rotated, inst.id);
+    db.prepare("DELETE FROM city_shop_items WHERE instance_id=?").run(inst.id);
+    return { error: null, depth };
   });
 }
 
@@ -885,21 +1066,34 @@ export function sellItem(userId: string, instanceId: string) {
     if (!inst || inst.owner_user_id !== userId) return { error: "Not yours." };
     if (inst.location !== "INVENTORY" && inst.location !== "STORAGE") return { error: "You cannot sell that here." };
     if (inst.location === "STORAGE" && character.location !== "CITY") return { error: "The vault opens only within the city walls." };
-    const price = itemValue(inst);
+    const depth = hubDepthOf(character);
+    const city = ensureCity(depth);
+    const gross = itemValue(inst);
+    const taxPct = Math.max(0, Math.min(100, Number(city.tax_percent) || 0));
+    const tax = Math.floor((gross * taxPct) / 100);
+    const price = gross - tax;
     destroyInstance(inst.id);
-    addCoins(userId, price, "ITEM_SELL", "shop", { instance: instanceId });
-    return { error: null, price };
+    if (tax > 0) addCityTax(depth, tax);
+    addCoins(userId, price, "ITEM_SELL", "shop", { instance: instanceId, tax, city: depth });
+    return { error: null, price, tax, gross };
   });
 }
 
 export function upgradeShop(userId: string) {
-  const user = db.prepare("SELECT shop_level FROM users WHERE id=?").get(userId) as { shop_level: number };
-  if (CONFIG.SHOP_START_ITEMS + user.shop_level - 1 >= CONFIG.SHOP_MAX_ITEMS) return { error: "The stall is as wide as it will go." };
-  const cost = CONFIG.SHOP_UPGRADE_BASE * user.shop_level;
-  if (!spendCoins(userId, cost, "UPGRADE", "shop-level")) return { error: "Not enough coins." };
-  db.prepare("UPDATE users SET shop_level = shop_level + 1 WHERE id=?").run(userId);
-  refreshShop(userId, true);
-  return { error: null };
+  return tx(() => {
+    const { error, character } = requireAlive(userId);
+    if (error || !character) return { error };
+    if (character.location !== "CITY") return { error: "The stall is in the city." };
+    const depth = hubDepthOf(character);
+    if (!canManageShop(userId, depth)) return { error: "Only the city ruler may tend the stall." };
+    const city = ensureCity(depth);
+    if (CONFIG.SHOP_START_ITEMS + city.shop_level - 1 >= CONFIG.SHOP_MAX_ITEMS) return { error: "The stall is as wide as it will go." };
+    const cost = CONFIG.SHOP_UPGRADE_BASE * city.shop_level;
+    if (!spendCoins(userId, cost, "UPGRADE", "shop-level")) return { error: "Not enough coins." };
+    db.prepare("UPDATE cities SET shop_level = shop_level + 1 WHERE depth=?").run(depth);
+    fillCityShop(depth, userId);
+    return { error: null, depth };
+  });
 }
 
 export function upgradeStorage(userId: string) {
@@ -1175,9 +1369,17 @@ export function forgeItems(userId: string, instanceIds: string[]) {
     if (!next) return { error: "That rarity cannot be hammered higher." };
     const cost = forgeCostFor(rarity);
     if (cost == null) return { error: "That rarity cannot be hammered higher." };
+    const oreKey = oreIdForRarity(rarity);
+    if (!oreKey) return { error: "That rarity cannot be hammered higher." };
+    const oreDef = ORE_META[oreKey].defId;
+    const ore = loadInv(String(character.id)).find((i) => i.definition_id === oreDef && !ids.includes(i.id));
+    if (!ore) return { error: "The anvil wants matching ore." };
+    const defRow = db.prepare("SELECT category FROM item_definitions WHERE id=?").get(defId) as { category: string } | undefined;
+    if (defRow?.category === "ore") return { error: "Ore is not forged. It feeds the hammer." };
     if (!spendCoins(userId, cost, "FORGE", "forge", { keep: items[0]!.id, rarity, next })) {
       return { error: "Not enough coins." };
     }
+    destroyInstance(ore.id);
     const keep = items[0]!;
     destroyInstance(items[1]!.id);
     destroyInstance(items[2]!.id);
@@ -1270,6 +1472,22 @@ export function adminResetDropTables() {
   return cfg;
 }
 
+export function adminShopTables() {
+  return loadShopConfig();
+}
+
+export function adminSaveShopTables(raw: unknown) {
+  const cfg = saveShopConfig(raw);
+  logGame("ADMIN", "shop rarity tables saved");
+  return cfg;
+}
+
+export function adminResetShopTables() {
+  const cfg = saveShopConfig(defaultShopConfig());
+  logGame("ADMIN", "shop rarity tables reset");
+  return cfg;
+}
+
 export function adminPackTables() {
   return loadPackConfig();
 }
@@ -1284,6 +1502,173 @@ export function adminResetPackTables() {
   const cfg = savePackConfig(defaultPackConfig());
   logGame("ADMIN", "pack odds tables reset");
   return cfg;
+}
+
+export function adminMineTables() {
+  return loadMineConfig();
+}
+
+export function adminSaveMineTables(raw: unknown) {
+  const cfg = saveMineConfig(raw);
+  logGame("ADMIN", "mine tables saved");
+  return cfg;
+}
+
+export function adminResetMineTables() {
+  const cfg = saveMineConfig(defaultMineConfig());
+  logGame("ADMIN", "mine tables reset");
+  return cfg;
+}
+
+export function itemCatalog() {
+  return loadItemCatalog();
+}
+
+export function adminItemIcons() {
+  return listItemIcons();
+}
+
+export function adminSaveItemIcon(dataUrl: string) {
+  return saveUploadedIcon(dataUrl);
+}
+
+export function adminSets() {
+  return db.prepare("SELECT id, name FROM item_sets ORDER BY name COLLATE NOCASE").all() as { id: string; name: string }[];
+}
+
+export function adminItemDefs() {
+  const rows = db
+    .prepare(
+      `SELECT id, name, category, slot, rarity_min, required_level, set_id, glyph, flavor, tags, base_stats, icon
+       FROM item_definitions ORDER BY required_level, name COLLATE NOCASE`
+    )
+    .all() as Record<string, unknown>[];
+  return rows.map((row) => {
+    const tags = JSON.parse(String(row.tags || "[]")) as string[];
+    const school = tags.includes("chain") ? "chain" : tags.includes("fire") ? "fire" : tags.includes("frost") ? "frost" : "";
+    return {
+      id: String(row.id),
+      slot: row.slot ? String(row.slot) : null,
+      rarity_min: String(row.rarity_min),
+      required_level: Number(row.required_level) || 1,
+      set_id: row.set_id ? String(row.set_id) : null,
+      icon: String(row.icon || ""),
+      twohand: tags.includes("twohand"),
+      school,
+      base_stats: sanitizeStats(JSON.parse(String(row.base_stats || "{}")) as Stats),
+      i18n: localesFor(String(row.id)),
+    };
+  });
+}
+
+function inferCategory(slot: string | null, prev?: string) {
+  if (!slot) return "ore";
+  if (slot === "Weapon") return "weapon";
+  if (slot === "Neck" || slot === "Ring1" || slot === "Ring2") return "jewelry";
+  return prev === "weapon" && slot === "Offhand" ? "weapon" : "armor";
+}
+
+function defaultGlyph(slot: string | null) {
+  if (!slot) return "stone";
+  if (slot === "Weapon") return "sword";
+  if (slot === "Offhand") return "shield";
+  if (slot === "Head") return "helm";
+  if (slot === "Chest") return "chest";
+  if (slot === "Gloves") return "gloves";
+  if (slot === "Legs") return "legs";
+  if (slot === "Boots") return "boots";
+  if (slot === "Neck") return "neck";
+  return "ring";
+}
+
+export function adminSaveItemDef(raw: Record<string, unknown>) {
+  const id = String(raw.id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+  if (!id) return { error: "Name an item id." as const };
+  const names = (raw.names && typeof raw.names === "object" ? raw.names : {}) as Record<string, string>;
+  const flavors = (raw.flavors && typeof raw.flavors === "object" ? raw.flavors : {}) as Record<string, string>;
+  const name = String(names.en || names.ru || names.zh || raw.name || "").trim().slice(0, 80);
+  if (name.length < 2) return { error: "Name the piece." as const };
+  const slots = ["Head", "Chest", "Gloves", "Legs", "Boots", "Weapon", "Offhand", "Neck", "Ring1", "Ring2"];
+  const slotRaw = String(raw.slot || "");
+  const slot = slotRaw && slots.includes(slotRaw) ? slotRaw : null;
+  const rarity = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"].includes(String(raw.rarity_min))
+    ? String(raw.rarity_min)
+    : "Common";
+  const req = Math.max(1, Math.trunc(Number(raw.required_level) || 1));
+  const prev = db.prepare("SELECT * FROM item_definitions WHERE id=?").get(id) as
+    | { category: string; glyph: string; tags: string; sell_mult: number; set_id: string | null }
+    | undefined;
+  const category = inferCategory(slot, prev?.category);
+  const flavor = String(flavors.en || flavors.ru || flavors.zh || "").slice(0, 240);
+  let setId = raw.set_id ? String(raw.set_id) : null;
+  if (setId && !db.prepare("SELECT id FROM item_sets WHERE id=?").get(setId)) setId = null;
+  const prevTags = prev ? (JSON.parse(prev.tags || "[]") as string[]) : [];
+  const keep = prevTags.filter((t) => !["magic", "chain", "fire", "frost", "ore", "twohand"].includes(t));
+  const school = ["chain", "fire", "frost"].includes(String(raw.school)) ? String(raw.school) : "";
+  if (!slot) keep.push("ore");
+  if (school) keep.push("magic", school);
+  if (raw.twohand) keep.push("twohand");
+  const glyph = prev?.glyph || defaultGlyph(slot);
+  const icon = normalizeIcon(raw.icon);
+  const stats: Stats = {};
+  const incoming = raw.base_stats && typeof raw.base_stats === "object" ? (raw.base_stats as Record<string, number>) : {};
+  for (const k of STAT_KEYS) {
+    const n = Number(incoming[k]);
+    if (Number.isFinite(n) && n) stats[k] = n;
+  }
+  const clean = sanitizeStats(stats);
+  db.prepare(
+    `INSERT INTO item_definitions (id,name,category,slot,rarity_min,base_level,required_level,width,height,stackable,max_stack,base_stats,affix_pool,set_id,glyph,flavor,tags,sell_mult,icon)
+     VALUES (?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET
+       name=excluded.name, category=excluded.category, slot=excluded.slot, rarity_min=excluded.rarity_min,
+       base_level=excluded.base_level, required_level=excluded.required_level, width=1, height=1,
+       base_stats=excluded.base_stats, set_id=excluded.set_id, flavor=excluded.flavor,
+       tags=excluded.tags, icon=excluded.icon`
+  ).run(
+    id,
+    name,
+    category,
+    slot,
+    rarity,
+    req,
+    req,
+    0,
+    1,
+    JSON.stringify(clean),
+    JSON.stringify([]),
+    setId,
+    glyph,
+    flavor,
+    JSON.stringify(keep),
+    prev?.sell_mult ?? 1,
+    icon
+  );
+  saveItemI18n(id, names, flavors);
+  const inst = db.prepare("SELECT * FROM item_instances WHERE definition_id = ? AND location != 'DESTROYED'").all(id) as InstanceRow[];
+  for (const row of inst) {
+    db.prepare("UPDATE item_instances SET required_level = ? WHERE id = ?").run(req, row.id);
+    row.required_level = req;
+    rerollInstanceFromDefinition(row);
+  }
+  logGame("ADMIN", `item def ${id}`);
+  return { error: null, id };
+}
+
+export function adminDeleteItemDef(id: string) {
+  const defId = String(id || "");
+  if (!defId) return { error: "No such piece." as const };
+  const used = db.prepare("SELECT COUNT(*) AS c FROM item_instances WHERE definition_id = ? AND location != 'DESTROYED'").get(defId) as { c: number };
+  if (used.c > 0) return { error: "That piece still walks the road." as const };
+  db.prepare("DELETE FROM item_i18n WHERE definition_id=?").run(defId);
+  db.prepare("DELETE FROM item_definitions WHERE id=?").run(defId);
+  logGame("ADMIN", `deleted item def ${defId}`);
+  return { error: null };
 }
 
 export function adminGate() {

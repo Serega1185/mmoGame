@@ -5,6 +5,9 @@ import type { Item } from "../api";
 
 const KEY = "ashmarch-lang";
 
+type LocaleBit = { name: string; flavor: string };
+type ItemCatalog = Record<string, Record<Lang, LocaleBit>>;
+
 function interp(s: string, vars?: Record<string, string | number>) {
   if (!vars) return s;
   return s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ""));
@@ -34,18 +37,34 @@ type Ctx = {
   regionDesc: (id: number, fallback?: string) => string;
   enemyName: (id: string | undefined, fallback?: string) => string;
   combatLine: (line: { key?: string; vars?: Record<string, string | number>; text: string }) => string;
+  reloadCatalog: () => Promise<void>;
 };
 
 const I18nCtx = createContext<Ctx | null>(null);
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(readLang);
+  const [catalog, setCatalog] = useState<ItemCatalog>({});
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : lang;
     document.title = UI[lang].title;
     document.documentElement.dataset.lang = lang;
   }, [lang]);
+
+  const reloadCatalog = async () => {
+    try {
+      const res = await fetch("/api/catalog/items", { credentials: "include" });
+      const data = (await res.json()) as { items?: ItemCatalog };
+      setCatalog(data.items || {});
+    } catch {
+      /* keep lore fallback */
+    }
+  };
+
+  useEffect(() => {
+    void reloadCatalog();
+  }, []);
 
   const api = useMemo<Ctx>(() => {
     const t = (key: string, vars?: Record<string, string | number>) => interp(UI[lang][key] || UI.en[key] || key, vars);
@@ -76,9 +95,13 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       itemName: (item) => {
         const id = typeof item === "string" ? item : item.definition_id;
         const fb = typeof item === "string" ? item : item.definition.name;
-        return ITEMS[id]?.[lang]?.[0] || fb;
+        return catalog[id]?.[lang]?.name || catalog[id]?.en?.name || ITEMS[id]?.[lang]?.[0] || fb;
       },
-      itemFlavor: (item) => ITEMS[item.definition_id]?.[lang]?.[1] || item.definition.flavor,
+      itemFlavor: (item) =>
+        catalog[item.definition_id]?.[lang]?.flavor ||
+        catalog[item.definition_id]?.en?.flavor ||
+        ITEMS[item.definition_id]?.[lang]?.[1] ||
+        item.definition.flavor,
       setName: (idOrName) => SETS[idOrName]?.[lang]?.[0] || Object.values(SETS).find((s) => s.en[0] === idOrName)?.[lang]?.[0] || idOrName,
       skillName: (id, fallback = id) => SKILLS[id]?.name[lang] || fallback,
       skillDesc: (id, fallback = "") => SKILLS[id]?.desc[lang] || fallback,
@@ -97,8 +120,9 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
         const key = line.key.replace(".", "_");
         return t(key, vars as Record<string, string | number>);
       },
+      reloadCatalog,
     };
-  }, [lang]);
+  }, [lang, catalog]);
 
   return <I18nCtx.Provider value={api}>{children}</I18nCtx.Provider>;
 }

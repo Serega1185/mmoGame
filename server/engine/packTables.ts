@@ -6,7 +6,7 @@ export type PackBand = { minDepth: number; two: number; three: number };
 export type PackConfig = { bands: PackBand[] };
 
 export function defaultPackConfig(): PackConfig {
-  return { bands: [{ minDepth: 0, two: 10, three: 1 }] };
+  return { bands: [{ minDepth: 1, two: 10, three: 1 }] };
 }
 
 export function normalizePackConfig(raw: unknown): PackConfig {
@@ -15,7 +15,7 @@ export function normalizePackConfig(raw: unknown): PackConfig {
   const seen = new Set<number>();
   const bands: PackBand[] = [];
   for (const b of bandsIn) {
-    const minDepth = Math.max(0, Math.trunc(Number(b?.minDepth)));
+    const minDepth = Math.max(1, Math.trunc(Number(b?.minDepth)));
     if (!Number.isFinite(minDepth) || seen.has(minDepth)) continue;
     seen.add(minDepth);
     const two = Math.min(100, Math.max(0, Number(b?.two)));
@@ -28,7 +28,7 @@ export function normalizePackConfig(raw: unknown): PackConfig {
   }
   if (!bands.length) return fallback;
   bands.sort((a, c) => a.minDepth - c.minDepth);
-  if (bands[0]!.minDepth !== 0) bands[0]!.minDepth = 0;
+  if (bands[0]!.minDepth !== 1) bands[0]!.minDepth = 1;
   return { bands };
 }
 
@@ -52,7 +52,7 @@ export function savePackConfig(raw: unknown): PackConfig {
 }
 
 export function packOddsFor(depth: number, cfg = loadPackConfig()): { two: number; three: number } {
-  const d = Math.max(0, Math.trunc(Number(depth) || 0));
+  const d = Math.max(1, Math.trunc(Number(depth) || 1));
   let pick = cfg.bands[0]!;
   for (const b of cfg.bands) {
     if (b.minDepth <= d) pick = b;

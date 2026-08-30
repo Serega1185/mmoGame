@@ -37,6 +37,7 @@ export type Item = {
     flavor: string;
     set_id: string | null;
     tags: string[];
+    icon?: string;
   };
   set: { id: string; name: string } | null;
 };

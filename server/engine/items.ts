@@ -178,6 +178,7 @@ export function hydrate(inst: InstanceRow) {
     magicSchool: schoolFromTags(tags),
     definition: {
       ...def,
+      icon: String(def?.icon || ""),
       base_stats: base,
       tags,
     },

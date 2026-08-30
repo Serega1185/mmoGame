@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS characters (
   xp INTEGER NOT NULL DEFAULT 0,
   region INTEGER NOT NULL DEFAULT 1,
   round INTEGER NOT NULL DEFAULT 1,
-  depth INTEGER NOT NULL DEFAULT 0,
+  depth INTEGER NOT NULL DEFAULT 1,
   map_state TEXT,
   hp INTEGER NOT NULL,
   max_hp INTEGER NOT NULL,
@@ -325,4 +325,31 @@ CREATE TABLE IF NOT EXISTS ground_loot (
 CREATE TABLE IF NOT EXISTS world_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cities (
+  depth INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  level INTEGER NOT NULL DEFAULT 1,
+  treasury INTEGER NOT NULL DEFAULT 0,
+  tax_percent INTEGER NOT NULL DEFAULT 5,
+  shop_level INTEGER NOT NULL DEFAULT 1,
+  owner_user_id TEXT REFERENCES users(id),
+  shop_restock_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS city_shop_items (
+  id TEXT PRIMARY KEY,
+  city_depth INTEGER NOT NULL,
+  instance_id TEXT NOT NULL,
+  price INTEGER NOT NULL,
+  slot INTEGER NOT NULL,
+  generated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS city_visits (
+  character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  city_depth INTEGER NOT NULL,
+  visited_at INTEGER NOT NULL,
+  PRIMARY KEY (character_id, city_depth)
 );

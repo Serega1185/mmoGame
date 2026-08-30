@@ -25,7 +25,7 @@ export function defaultDropConfig(): DropConfig {
   return {
     bands: [
       {
-        minDepth: 0,
+        minDepth: 1,
         tables: {
           normal: cloneWeights(RARITY_WEIGHTS, 0),
           elite: cloneWeights(RARITY_WEIGHTS, 10),
@@ -46,7 +46,7 @@ export function normalizeDropConfig(raw: unknown): DropConfig {
   const seen = new Set<number>();
   const bands: DropBand[] = [];
   for (const b of bandsIn) {
-    const minDepth = Math.max(0, Math.trunc(Number(b?.minDepth)));
+    const minDepth = Math.max(1, Math.trunc(Number(b?.minDepth)));
     if (!Number.isFinite(minDepth) || seen.has(minDepth)) continue;
     seen.add(minDepth);
     const tables = {} as Record<DropKind, RarityWeights>;
@@ -58,7 +58,7 @@ export function normalizeDropConfig(raw: unknown): DropConfig {
   }
   if (!bands.length) return fallback;
   bands.sort((a, c) => a.minDepth - c.minDepth);
-  if (bands[0]!.minDepth !== 0) bands[0]!.minDepth = 0;
+  if (bands[0]!.minDepth !== 1) bands[0]!.minDepth = 1;
   return { bands };
 }
 
@@ -87,7 +87,7 @@ export function dropKindOf(enemyKind: string): DropKind {
 }
 
 export function weightsFor(depth: number, kind: DropKind, cfg = loadDropConfig()): RarityWeights {
-  const d = Math.max(0, Math.trunc(Number(depth) || 0));
+  const d = Math.max(1, Math.trunc(Number(depth) || 1));
   let pick = cfg.bands[0]!;
   for (const b of cfg.bands) {
     if (b.minDepth <= d) pick = b;

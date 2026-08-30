@@ -1,8 +1,8 @@
 import { db } from "../db.ts";
 import { generateInstance, itemValue, type InstanceRow } from "./items.ts";
 import { rollRarity } from "./items.ts";
-import { RARITIES } from "./stats.ts";
-import { dropKindOf, weightsFor } from "./dropTables.ts";
+import { RARITIES, type Rarity } from "./stats.ts";
+import { dropKindOf, weightsFor, withLuck } from "./dropTables.ts";
 
 export function rollLoot(opts: {
   userId: string;
@@ -12,17 +12,27 @@ export function rollLoot(opts: {
   luck: number;
   depth?: number;
 }) {
-  const defs = db.prepare("SELECT id, required_level FROM item_definitions WHERE required_level <= ? AND slot IS NOT NULL AND slot != ''").all(opts.region * 6 + 8) as {
-    id: string;
-    required_level: number;
-  }[];
-  const rarityWeights = weightsFor(opts.depth || 0, dropKindOf(opts.enemyKind));
+  const defs = db
+    .prepare(
+      "SELECT id, required_level, rarity_min FROM item_definitions WHERE required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
+    )
+    .all(opts.region * 6 + 8) as { id: string; required_level: number; rarity_min: string }[];
+  const rarityWeights = withLuck(weightsFor(opts.depth || 1, dropKindOf(opts.enemyKind)), opts.luck);
   const items: InstanceRow[] = [];
   const used = new Set<string>();
-  for (let i = 0; i < 3; i++) {
+  const minIdxOf = (min: string) => {
+    const i = RARITIES.indexOf(min as Rarity);
+    return i < 0 ? 0 : i;
+  };
+  for (let n = 0; n < 3; n++) {
     if (!defs.length) break;
-    const pool = defs.filter((d) => !used.has(d.id));
-    const pick = (pool.length ? pool : defs)[Math.floor(Math.random() * (pool.length ? pool.length : defs.length))]!;
+    const rarity = rollRarity(0, undefined, rarityWeights);
+    const rIdx = RARITIES.indexOf(rarity);
+    let pool = defs.filter((d) => !used.has(d.id) && minIdxOf(d.rarity_min) <= rIdx);
+    if (!pool.length) pool = defs.filter((d) => minIdxOf(d.rarity_min) <= rIdx);
+    if (!pool.length) pool = defs.filter((d) => !used.has(d.id));
+    if (!pool.length) pool = defs;
+    const pick = pool[Math.floor(Math.random() * pool.length)]!;
     used.add(pick.id);
     const inst = generateInstance({
       definitionId: pick.id,
@@ -30,15 +40,12 @@ export function rollLoot(opts: {
       ownerCharacterId: opts.characterId,
       location: "GROUND",
       region: opts.region,
-      luck: opts.luck,
-      rarityWeights,
+      forceRarity: rarity,
     });
     items.push(inst);
     db.prepare("INSERT INTO ground_loot (character_id, instance_id) VALUES (?, ?)").run(opts.characterId, inst.id);
   }
-  const gold =
-    Math.round((8 + opts.region * 6) * (1 + opts.luck / 100) * (opts.enemyKind === "boss" ? 4 : opts.enemyKind === "elite" ? 2 : 1) * (0.7 + Math.random() * 0.6));
-  return { items, gold };
+  return { items, gold: 0 };
 }
 
 export function clearGround(characterId: string) {

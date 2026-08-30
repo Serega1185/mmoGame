@@ -32,11 +32,13 @@ function fileFor(item: Item): string {
   if (glyph === "boots" || slot === "Boots") return `${w}_boots_01.png`;
   if (glyph === "bag" || glyph === "charm") return `${w}_belt_01.png`;
   if (glyph === "ring" || glyph === "neck" || slot === "Neck" || slot === "Ring1" || slot === "Ring2") return "light_belt_01.png";
-  if (glyph === "potion" || glyph === "vial" || glyph === "torch" || glyph === "stone") return "knive_01.png";
+  if (glyph === "potion" || glyph === "vial" || glyph === "torch") return "knive_01.png";
   return "one-handed_sword_01.png";
 }
 
 export function itemIconSrc(item: Item) {
+  const custom = item.definition.icon;
+  if (custom) return custom;
   return `/assets/64x64/${fileFor(item)}`;
 }
 
