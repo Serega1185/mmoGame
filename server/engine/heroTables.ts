@@ -16,7 +16,6 @@ export type HeroBase = {
   lifesteal: number;
   luck: number;
   magicDamage: number;
-  pass: Record<string, number>;
   icon: string;
   portrait: string;
   starters: string[];
@@ -37,7 +36,6 @@ const SEED: {
   lifesteal: number;
   luck: number;
   magicDamage: number;
-  pass: Record<string, number>;
   names: Record<CatalogLang, HeroLocale>;
 }[] = [
   {
@@ -52,7 +50,6 @@ const SEED: {
     lifesteal: CLASS_BASE.Ironclad.lifesteal,
     luck: 0,
     magicDamage: 0,
-    pass: { ...CLASS_BASE.Ironclad.pass },
     names: {
       en: { name: "Ironclad", blurb: "Thick hide, heavier steel. Armor and endurance." },
       ru: { name: "Железношкурый", blurb: "Толстая шкура, тяжёлая сталь. Броня и выносливость." },
@@ -71,7 +68,6 @@ const SEED: {
     lifesteal: CLASS_BASE.Shadehand.lifesteal,
     luck: 0,
     magicDamage: 0,
-    pass: { ...CLASS_BASE.Shadehand.pass },
     names: {
       en: { name: "Shadehand", blurb: "Quiet knives, stolen breaths. Crit, dodge, leech." },
       ru: { name: "Тенерук", blurb: "Тихие ножи, краденые вздохи. Крит, уклонение, вампиризм." },
@@ -90,7 +86,6 @@ const SEED: {
     lifesteal: CLASS_BASE.Thornbow.lifesteal,
     luck: 0,
     magicDamage: 0,
-    pass: { ...CLASS_BASE.Thornbow.pass },
     names: {
       en: { name: "Thornbow", blurb: "The hedge keeps its own. Loot, gold, and keen shots." },
       ru: { name: "Терновый Лук", blurb: "Изгородь бережёт своих. Добыча, золото и меткий выстрел." },
@@ -109,7 +104,6 @@ const SEED: {
     lifesteal: 0,
     luck: 4,
     magicDamage: 14,
-    pass: { regen: 2 },
     names: {
       en: { name: "Ashpriest", blurb: "Cinder rites. Magic, dregs of life, and a slow mend." },
       ru: { name: "Пепельный жрец", blurb: "Обряды золы. Магия, остатки жизни и медленное исцеление." },
@@ -128,7 +122,6 @@ const SEED: {
     lifesteal: 2,
     luck: 0,
     magicDamage: 0,
-    pass: { armor: 6, healthPct: 4 },
     names: {
       en: { name: "Warden", blurb: "A middle road. Steady steel and a stubborn heart." },
       ru: { name: "Страж", blurb: "Средняя дорога. Верная сталь и упрямое сердце." },
@@ -167,6 +160,7 @@ export function ensureHeroTables() {
   } catch {
     /* already present */
   }
+  db.prepare("UPDATE hero_defs SET pass = '{}'").run();
   db.exec(
     `CREATE TABLE IF NOT EXISTS hero_i18n (
       hero_id TEXT NOT NULL REFERENCES hero_defs(id) ON DELETE CASCADE,
@@ -190,7 +184,7 @@ export function seedHeroes() {
      ON CONFLICT(hero_id, lang) DO NOTHING`
   );
   for (const h of SEED) {
-    ins.run(h.id, h.sort, h.health, h.damage, h.armor, h.critChance, h.critDamage, h.dodge, h.lifesteal, h.luck, h.magicDamage, JSON.stringify(h.pass), "");
+    ins.run(h.id, h.sort, h.health, h.damage, h.armor, h.critChance, h.critDamage, h.dodge, h.lifesteal, h.luck, h.magicDamage, "{}", "");
     for (const lang of LANGS) loc.run(h.id, lang, h.names[lang].name, h.names[lang].blurb);
   }
 }
@@ -202,15 +196,6 @@ function parseStarters(raw: string) {
     return [...new Set(o.map((x) => String(x || "").trim()).filter(Boolean))].slice(0, 16);
   } catch {
     return [];
-  }
-}
-
-function parsePass(raw: string) {
-  try {
-    const o = JSON.parse(raw || "{}");
-    return o && typeof o === "object" ? (o as Record<string, number>) : {};
-  } catch {
-    return {};
   }
 }
 
@@ -228,7 +213,6 @@ export function loadHeroBase(id: string): HeroBase | null {
         lifesteal: number;
         luck: number;
         magic_damage: number;
-        pass: string;
         icon: string;
         portrait?: string;
         starters?: string;
@@ -249,7 +233,6 @@ export function loadHeroBase(id: string): HeroBase | null {
       lifesteal: fb.lifesteal,
       luck: 0,
       magicDamage: 0,
-      pass: { ...fb.pass },
       icon: "",
       portrait: "",
       starters: [],
@@ -267,7 +250,6 @@ export function loadHeroBase(id: string): HeroBase | null {
     lifesteal: row.lifesteal,
     luck: row.luck,
     magicDamage: row.magic_damage,
-    pass: parsePass(row.pass),
     icon: row.icon || "",
     portrait: row.portrait || "",
     starters: parseStarters(row.starters || "[]"),
@@ -336,12 +318,6 @@ export function adminSaveHero(raw: Record<string, unknown>) {
     const v = Number(raw[k]);
     return Number.isFinite(v) ? v : d;
   };
-  const passRaw = raw.pass && typeof raw.pass === "object" ? (raw.pass as Record<string, number>) : cur.pass;
-  const pass: Record<string, number> = {};
-  for (const [k, v] of Object.entries(passRaw || {})) {
-    const num = Number(v);
-    if (Number.isFinite(num) && num) pass[k] = num;
-  }
   const icon = cleanAsset(raw.icon, cur.icon);
   const portrait = cleanAsset(raw.portrait, cur.portrait);
   const startersIn = Array.isArray(raw.starters) ? raw.starters : cur.starters;
@@ -361,7 +337,7 @@ export function adminSaveHero(raw: Record<string, unknown>) {
     Math.max(0, n("lifesteal", cur.lifesteal)),
     Math.max(0, n("luck", cur.luck)),
     Math.max(0, Math.trunc(n("magicDamage", cur.magicDamage))),
-    JSON.stringify(pass),
+    "{}",
     icon,
     portrait,
     JSON.stringify(starters),

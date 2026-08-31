@@ -98,7 +98,8 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     };
     const enemyName = (id: string | undefined, fallback = "") => {
       if (!id || id === "player") return fallback;
-      return enemies[id]?.[lang] || enemies[id]?.en || ENEMIES[id]?.[lang] || fallback;
+      const defId = id.includes("#") ? id.slice(0, id.indexOf("#")) : id;
+      return enemies[defId]?.[lang] || enemies[defId]?.en || ENEMIES[defId]?.[lang] || fallback;
     };
     const heroName = (id: string | undefined, fallback = "") => {
       if (!id) return fallback;

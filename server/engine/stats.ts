@@ -313,8 +313,6 @@ export const CLASS_BASE = {
     critDamage: 150,
     dodge: 3,
     lifesteal: 0,
-    passive: "Ironclad: +12% Armor, +8% Health",
-    pass: { armor: 12, healthPct: 8 } as Record<string, number>,
   },
   Shadehand: {
     health: 100,
@@ -324,8 +322,6 @@ export const CLASS_BASE = {
     critDamage: 175,
     dodge: 10,
     lifesteal: 4,
-    passive: "Shadehand: +8% Crit, +6% Dodge, +4% Lifesteal",
-    pass: { critChance: 8, dodge: 6, lifesteal: 4 },
   },
   Thornbow: {
     health: 110,
@@ -335,8 +331,6 @@ export const CLASS_BASE = {
     critDamage: 160,
     dodge: 7,
     lifesteal: 0,
-    passive: "Thornbow: +10% Luck, +5% Crit",
-    pass: { luck: 10, critChance: 5 },
   },
 } as const;
 

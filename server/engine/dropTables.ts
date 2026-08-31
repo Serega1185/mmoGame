@@ -7,11 +7,13 @@ export type RarityWeights = Record<Rarity, number>;
 export type LevelRange = { min: number; max: number };
 export type DropBand = {
   minDepth: number;
-  tables: Record<DropKind, RarityWeights>;
   beforeCity: LevelRange;
   afterCity: LevelRange;
 };
-export type DropConfig = { bands: DropBand[] };
+export type DropConfig = {
+  tables: Record<DropKind, RarityWeights>;
+  bands: DropBand[];
+};
 
 /** Centered city on floor 5. Floors 1–4 are before, 6–10 after. */
 export const CITY_FLOOR = 5;
@@ -47,21 +49,19 @@ function clampRange(raw: Partial<LevelRange> | undefined, fallback: LevelRange):
   return { min, max };
 }
 
+function emptyTables(): Record<DropKind, RarityWeights> {
+  return {
+    normal: cloneWeights(RARITY_WEIGHTS, 0),
+    elite: cloneWeights(RARITY_WEIGHTS, 10),
+    boss: cloneWeights(RARITY_WEIGHTS, 25),
+  };
+}
+
 export function defaultDropConfig(): DropConfig {
   const levels = defaultLevelRanges(1);
   return {
-    bands: [
-      {
-        minDepth: 1,
-        tables: {
-          normal: cloneWeights(RARITY_WEIGHTS, 0),
-          elite: cloneWeights(RARITY_WEIGHTS, 10),
-          boss: cloneWeights(RARITY_WEIGHTS, 25),
-        },
-        beforeCity: levels.beforeCity,
-        afterCity: levels.afterCity,
-      },
-    ],
+    tables: emptyTables(),
+    bands: [{ minDepth: 1, beforeCity: levels.beforeCity, afterCity: levels.afterCity }],
   };
 }
 
@@ -69,32 +69,57 @@ export function emptyWeights(): RarityWeights {
   return cloneWeights(RARITY_WEIGHTS, 0);
 }
 
+function tablesFrom(raw: unknown): Record<DropKind, RarityWeights> {
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const tables = {} as Record<DropKind, RarityWeights>;
+  for (const kind of DROP_KINDS) {
+    tables[kind] = cloneWeights(src[kind] as Partial<RarityWeights> | undefined, 0);
+    if (!Object.values(tables[kind]).some((v) => v > 0)) tables[kind] = emptyWeights();
+  }
+  return tables;
+}
+
+function normalizeBand(raw: unknown): DropBand | null {
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const minDepth = Math.max(1, Math.trunc(Number(src.minDepth)));
+  if (!Number.isFinite(minDepth)) return null;
+  const fallback = defaultLevelRanges(minDepth);
+  return {
+    minDepth,
+    beforeCity: clampRange(src.beforeCity as LevelRange | undefined, fallback.beforeCity),
+    afterCity: clampRange(src.afterCity as LevelRange | undefined, fallback.afterCity),
+  };
+}
+
 export function normalizeDropConfig(raw: unknown): DropConfig {
   const fallback = defaultDropConfig();
-  const bandsIn = Array.isArray((raw as DropConfig)?.bands) ? (raw as DropConfig).bands : fallback.bands;
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const rawBands = Array.isArray(src.bands) ? src.bands : [];
+  const legacy = rawBands
+    .slice()
+    .sort(
+      (a: { minDepth?: unknown }, b: { minDepth?: unknown }) =>
+        Math.trunc(Number(a?.minDepth) || 1) - Math.trunc(Number(b?.minDepth) || 1)
+    )[0] as { tables?: unknown } | undefined;
+  const tablesRaw = src.tables ?? legacy?.tables;
+
   const seen = new Set<number>();
   const bands: DropBand[] = [];
-  for (const b of bandsIn) {
-    const minDepth = Math.max(1, Math.trunc(Number(b?.minDepth)));
-    if (!Number.isFinite(minDepth) || seen.has(minDepth)) continue;
-    seen.add(minDepth);
-    const tables = {} as Record<DropKind, RarityWeights>;
-    for (const kind of DROP_KINDS) {
-      tables[kind] = cloneWeights(b?.tables?.[kind], 0);
-      if (!Object.values(tables[kind]).some((v) => v > 0)) tables[kind] = emptyWeights();
-    }
-    const fallback = defaultLevelRanges(minDepth);
-    bands.push({
-      minDepth,
-      tables,
-      beforeCity: clampRange(b?.beforeCity, fallback.beforeCity),
-      afterCity: clampRange(b?.afterCity, fallback.afterCity),
-    });
+  for (const b of rawBands) {
+    const band = normalizeBand(b);
+    if (!band || seen.has(band.minDepth)) continue;
+    seen.add(band.minDepth);
+    bands.push(band);
   }
-  if (!bands.length) return fallback;
+  if (!bands.length && (src.beforeCity || src.afterCity)) {
+    const band = normalizeBand({ minDepth: 1, beforeCity: src.beforeCity, afterCity: src.afterCity });
+    if (band) bands.push(band);
+  }
+  if (!bands.length) return { tables: tablesFrom(tablesRaw), bands: fallback.bands };
+
   bands.sort((a, c) => a.minDepth - c.minDepth);
   if (bands[0]!.minDepth !== 1) bands[0]!.minDepth = 1;
-  return { bands };
+  return { tables: tablesFrom(tablesRaw), bands };
 }
 
 export function loadDropConfig(): DropConfig {
@@ -131,8 +156,8 @@ export function bandFor(depth: number, cfg = loadDropConfig()): DropBand {
   return pick;
 }
 
-export function weightsFor(depth: number, kind: DropKind, cfg = loadDropConfig()): RarityWeights {
-  return bandFor(depth, cfg).tables[kind];
+export function weightsFor(_depth: number, kind: DropKind, cfg = loadDropConfig()): RarityWeights {
+  return cfg.tables[kind];
 }
 
 export function afterCityFloor(round: number) {

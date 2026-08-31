@@ -42,13 +42,27 @@ import {
   generateMarch,
   parseMarch,
   placeMines,
+  placeCamps,
   reachableIds,
   rollMystery,
+  seatAtCentralCity,
   toPublicMarch,
+  isGuardedKind,
   type MarchState,
   type ResolvedKind,
 } from "./engine/march.ts";
 import { addCityTax, ensureCity, hubDepthOf, publicCity, unlockedCityMax } from "./engine/city.ts";
+import {
+  campCoinPayout,
+  defaultMapGlobals,
+  ensureMapTables,
+  loadMapGlobals,
+  mapRefreshMs,
+  parkedMap,
+  roadIsOpen,
+  saveMapGlobals,
+  upsertParkedMap,
+} from "./engine/mapTables.ts";
 import { defaultShopConfig, loadShopConfig, saveShopConfig, shopLevelRangeFor, shopRestockMs, shopWeightsFor } from "./engine/shopTables.ts";
 
 export function publicItem(inst: InstanceRow) {
@@ -92,6 +106,7 @@ function syncVitals(character: { id: unknown; class: unknown; level: unknown; hp
 
 export function snapshotCharacter(c: Record<string, unknown>) {
   fillMissingSlots(String(c.id));
+  maybeRefreshCurrentMap(c);
   const { power, hp } = syncVitals(c);
   c = { ...c, max_hp: power.maxHp, hp };
   const inv = loadInv(String(c.id)).map(publicItem);
@@ -246,41 +261,89 @@ function pickEnemy(regionId: number, kind: "normal" | "elite" | "boss") {
   return db.prepare("SELECT * FROM enemies WHERE id = ?").get(id);
 }
 
-function ensureSideCity(_state: MarchState) {
-  return false;
-}
-
 function saveMarch(characterId: unknown, state: MarchState) {
   db.prepare("UPDATE characters SET map_state = ? WHERE id = ?").run(JSON.stringify(state), characterId);
+}
+
+function maybeRefreshCurrentMap(character: Record<string, unknown>) {
+  ensureMapTables();
+  const d = Math.max(1, Number(character.depth) || 1);
+  const parked = parkedMap(String(character.id), d);
+  if (!parked?.refresh_at || now() < parked.refresh_at) return;
+  const state = generateMarch(d, { fromCity: true });
+  upsertParkedMap(String(character.id), d, JSON.stringify(state), null);
+  saveMarch(character.id, state);
+  db.prepare("UPDATE characters SET round=? WHERE id=?").run(5, character.id);
+  character.map_state = JSON.stringify(state);
+  character.round = 5;
+}
+
+function parkCurrentMap(character: Record<string, unknown>, refreshAt?: number | null) {
+  ensureMapTables();
+  const depth = Math.max(1, Number(character.depth) || 1);
+  const raw = typeof character.map_state === "string" ? character.map_state : JSON.stringify(character.map_state || {});
+  if (raw && raw !== "{}") upsertParkedMap(String(character.id), depth, raw, refreshAt);
+}
+
+function adoptDepthMap(character: Record<string, unknown>, depth: number, seatCity: boolean) {
+  ensureMapTables();
+  const d = Math.max(1, Math.trunc(depth));
+  const parked = parkedMap(String(character.id), d);
+  const due = parked?.refresh_at != null && now() >= parked.refresh_at;
+  let state = !due && parked ? parseMarch(parked.map_state) : null;
+  if (!state) {
+    state = generateMarch(d, { fromCity: seatCity || due || !!parked });
+    upsertParkedMap(String(character.id), d, JSON.stringify(state), null);
+  } else if (seatCity) {
+    seatAtCentralCity(state);
+    upsertParkedMap(String(character.id), d, JSON.stringify(state), parked?.refresh_at ?? null);
+  }
+  const city = state.nodes.find((n) => n.kind === "city" && n.floor === 5);
+  db.prepare("UPDATE characters SET depth=?, region=?, round=?, map_state=? WHERE id=?").run(
+    d,
+    Math.min(10, d),
+    city?.floor || 5,
+    JSON.stringify(state),
+    character.id
+  );
+  character.depth = d;
+  character.region = Math.min(10, d);
+  character.round = city?.floor || 5;
+  character.map_state = JSON.stringify(state);
+  return state;
 }
 
 function ensureMarch(character: Record<string, unknown>): MarchState {
   let state = parseMarch(character.map_state);
   if (!state) {
-    state = generateMarch(Math.max(1, Number(character.depth || 1)));
-    if (character.location === "CITY") {
-      const city = state.nodes.find((n) => n.kind === "city" && n.floor === 5) || state.nodes.find((n) => n.kind === "city");
-      if (city) {
-        state.current = city.id;
-        state.visited = [city.id];
-        db.prepare("UPDATE characters SET round = ? WHERE id = ?").run(city.floor, character.id);
-      }
+    const inCity = character.location === "CITY";
+    state = generateMarch(Math.max(1, Number(character.depth || 1)), { fromCity: inCity });
+    if (inCity) {
+      seatAtCentralCity(state);
+      db.prepare("UPDATE characters SET round = ? WHERE id = ?").run(5, character.id);
     }
-    saveMarch(character.id, state);
-    character.map_state = JSON.stringify(state);
-  } else if (ensureSideCity(state)) {
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
   }
   if (!Array.isArray(state.fled)) state.fled = [];
   if (!Array.isArray(state.fledEdges)) state.fledEdges = [];
+  const skipPlaced = [
+    ...state.visited,
+    ...state.fled,
+    state.current || "",
+    state.pending || "",
+    ...(state.fromCity ? state.nodes.filter((n) => n.floor < 5).map((n) => n.id) : []),
+  ];
+  let placed = false;
   if (!state.nodes.some((n) => n.kind === "mine")) {
-    placeMines(state.nodes, Math.max(1, Number(character.depth || 1)), [
-      ...state.visited,
-      ...state.fled,
-      state.current || "",
-      state.pending || "",
-    ]);
+    placeMines(state.nodes, Math.max(1, Number(character.depth || 1)), skipPlaced);
+    placed = true;
+  }
+  if (!state.nodes.some((n) => n.kind === "camp")) {
+    placeCamps(state.nodes, skipPlaced);
+    placed = true;
+  }
+  if (placed) {
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
   }
@@ -301,9 +364,20 @@ function finishPendingNode(character: Record<string, unknown>) {
   state.pending = null;
   const resolved = node.resolved || node.kind;
   if (resolved === "boss") {
-    const depth = Math.max(1, Number(character.depth || 1) + 1);
+    const oldDepth = Math.max(1, Number(character.depth) || 1);
+    character.map_state = JSON.stringify(state);
+    parkCurrentMap(character, now() + mapRefreshMs());
+    if (oldDepth >= loadGate().maxDepth) {
+      adoptDepthMap(character, oldDepth, true);
+      db.prepare("UPDATE characters SET location='CITY', hub_depth=? WHERE id=?").run(oldDepth, character.id);
+      character.location = "CITY";
+      character.hub_depth = oldDepth;
+      return { newAct: false };
+    }
+    const depth = oldDepth + 1;
     const region = Math.min(10, depth);
     const fresh = generateMarch(depth);
+    upsertParkedMap(String(character.id), depth, JSON.stringify(fresh), null);
     db.prepare("UPDATE characters SET depth = ?, region = ?, round = 1, location = 'WILD', map_state = ? WHERE id = ?").run(
       depth,
       region,
@@ -407,8 +481,8 @@ function toFoe(enemy: EnemyRow) {
   };
 }
 
-function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss" | "mine", depth: number): EnemyRow[] {
-  const enemy = pickEnemy(regionId, kind === "mine" ? "normal" : kind) as EnemyRow;
+function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss" | "mine" | "camp", depth: number): EnemyRow[] {
+  const enemy = pickEnemy(regionId, isGuardedKind(kind) ? "normal" : kind) as EnemyRow;
   const pack = [enemy];
   const region = db.prepare("SELECT enemy_pool FROM regions WHERE id = ?").get(regionId) as { enemy_pool: string };
   const pool = JSON.parse(region.enemy_pool || "[]") as string[];
@@ -417,7 +491,7 @@ function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss" | "mi
     const add = db.prepare("SELECT * FROM enemies WHERE id = ?").get(id) as EnemyRow | undefined;
     if (add) pack.push(add);
   };
-  if (kind === "mine") {
+  if (isGuardedKind(kind)) {
     addOne();
     const { three } = packOddsFor(depth);
     if (Math.random() * 100 < three) addOne();
@@ -430,6 +504,45 @@ function pickEncounter(regionId: number, kind: "normal" | "elite" | "boss" | "mi
   return pack;
 }
 
+function foeAbilityView(enemy: EnemyRow) {
+  const loot = parseEnemyLoot(enemy.loot_table);
+  let listed: string[] = [];
+  try {
+    const raw = JSON.parse(enemy.abilities || "[]");
+    listed = Array.isArray(raw) ? raw.map(String) : [];
+  } catch {
+    listed = [];
+  }
+  const has = (k: string) => listed.includes(k);
+  const out: { id: string; n?: number; p?: number; d?: number; h?: number }[] = [];
+  if (has("heavy")) out.push({ id: "heavy", n: Math.max(0, Number(loot.heavyPct ?? 20)) });
+  if (has("regen")) out.push({ id: "regen", n: Math.max(0, Number(loot.regen ?? 2)) });
+  if (has("bleed")) {
+    out.push({
+      id: "bleed",
+      n: Math.max(0, Number(loot.bleed ?? 4)),
+      p: Math.max(0, Number(loot.bleedChance ?? 40)),
+    });
+  }
+  if (has("poison")) {
+    out.push({
+      id: "poison",
+      n: Math.max(0, Number(loot.poison ?? 4)),
+      p: Math.max(0, Number(loot.poisonChance ?? 40)),
+    });
+  }
+  if (has("fire")) {
+    out.push({
+      id: "fire",
+      d: Math.max(0, Number(loot.fireDmg ?? 4)),
+      h: Math.max(0, Math.trunc(Number(loot.fireHits ?? 3))),
+      p: Math.max(0, Number(loot.fireChance ?? 30)),
+    });
+  }
+  if (loot.undead) out.push({ id: "undead" });
+  return out;
+}
+
 function packView(pack: EnemyRow[]) {
   return pack.map((e, i) => ({
     id: `${e.id}#${i}`,
@@ -440,6 +553,7 @@ function packView(pack: EnemyRow[]) {
     damage: e.damage,
     armor: e.armor,
     icon: enemyIconOf(e),
+    abilities: foeAbilityView(e),
   }));
 }
 
@@ -526,6 +640,7 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
       talentGain,
       character.id
     );
+    const campGold = loot.items.length ? pendingCampGold(character) : grantCampCoins({ ...character, loot_pending: "[]" });
     if (!loot.items.length) {
       const ore = grantMineOre({ ...character, loot_pending: "[]" });
       finishPendingNode({ ...character, loot_pending: "[]" });
@@ -541,6 +656,7 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
           xpGain,
           level,
           ore: ore ? publicItem(ore) : null,
+          campGold: campGold || undefined,
         },
       };
     }
@@ -555,6 +671,7 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
         loot: loot.items.map(publicItem),
         xpGain,
         level,
+        campGold: campGold || undefined,
       },
     };
   }
@@ -577,7 +694,7 @@ export function startCombat(userId: string) {
     state.pendingFight = null;
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
-    const fight = runCombat(userId, character, pf.kind === "mine" ? "normal" : pf.kind, pack);
+    const fight = runCombat(userId, character, isGuardedKind(pf.kind) ? "normal" : pf.kind, pack);
     if (fight.error) return fight;
     return { error: null, action: "fight" as const, ...(fight.result ?? {}) };
   });
@@ -623,7 +740,14 @@ export function travel(userId: string, nodeId: string) {
     if (node.kind === "mystery" && !node.resolved) {
       resolved = rollMystery();
       node.resolved = resolved;
-    } else if (node.kind === "monster" || node.kind === "elite" || node.kind === "boss" || node.kind === "city" || node.kind === "mine") {
+    } else if (
+      node.kind === "monster" ||
+      node.kind === "elite" ||
+      node.kind === "boss" ||
+      node.kind === "city" ||
+      node.kind === "mine" ||
+      node.kind === "camp"
+    ) {
       resolved = node.kind;
     }
 
@@ -768,8 +892,9 @@ export function pickLoot(userId: string, instanceId: string | null) {
     );
     const row = db.prepare("SELECT * FROM characters WHERE id=?").get(character.id) as Record<string, unknown>;
     const ore = grantMineOre(row);
+    const campGold = grantCampCoins(row);
     finishPendingNode(row);
-    return { error: null, ore: ore ? publicItem(ore) : null };
+    return { error: null, ore: ore ? publicItem(ore) : null, campGold: campGold || undefined };
   });
 }
 
@@ -807,6 +932,24 @@ function grantMineOre(character: Record<string, unknown>): InstanceRow | null {
   }
 }
 
+function pendingCampGold(character: Record<string, unknown>): number {
+  const state = parseMarch(character.map_state);
+  if (!state?.pending) return 0;
+  const node = state.nodes.find((n) => n.id === state.pending);
+  if (node?.kind !== "camp") return 0;
+  return campCoinPayout(Math.max(1, Number(character.depth) || 1));
+}
+
+function grantCampCoins(character: Record<string, unknown>): number {
+  const gold = pendingCampGold(character);
+  if (gold <= 0) return 0;
+  const state = parseMarch(character.map_state);
+  const node = state?.nodes.find((n) => n.id === state.pending);
+  addCoins(String(character.user_id), gold, "CAMP", `camp:${node?.id || "camp"}`, { depth: character.depth });
+  db.prepare("UPDATE characters SET gold_earned = gold_earned + ? WHERE id=?").run(gold, character.id);
+  return gold;
+}
+
 export function pickTalent(userId: string, talentId: string) {
   return tx(() => {
     const { error, character } = requireAlive(userId);
@@ -841,6 +984,10 @@ export function leaveCity(userId: string) {
   const { error, character } = requireAlive(userId);
   if (error || !character) return { error };
   if (character.location !== "CITY") return { error: "You are already on the road." };
+  maybeRefreshCurrentMap(character);
+  const depth = Math.max(1, Number(character.depth) || 1);
+  if (depth >= loadGate().maxDepth) return { error: "You have reached the maximum depth." };
+  if (!roadIsOpen(String(character.id), depth)) return { error: "The road is not yet remade." };
   db.prepare("UPDATE characters SET location='WILD' WHERE id=?").run(character.id);
   return { error: null };
 }
@@ -851,10 +998,15 @@ export function switchCity(userId: string, depth: number) {
   if (character.location !== "CITY") return { error: "Leave the road first." };
   const d = Math.trunc(Number(depth));
   if (!Number.isFinite(d) || d < 1) return { error: "That city is not charted yet." };
+  if (d > loadGate().maxDepth) return { error: "You have reached the maximum depth." };
   const user = db.prepare("SELECT highest_region FROM users WHERE id=?").get(userId) as { highest_region: number };
   if (d > unlockedCityMax(character, user.highest_region)) return { error: "That city is not charted yet." };
   ensureCity(d);
-  db.prepare("UPDATE characters SET hub_depth=? WHERE id=?").run(d, character.id);
+  parkCurrentMap(character);
+  adoptDepthMap(character, d, true);
+  db.prepare("UPDATE characters SET hub_depth=?, location='CITY' WHERE id=?").run(d, character.id);
+  character.hub_depth = d;
+  character.location = "CITY";
   return { error: null };
 }
 
@@ -1635,6 +1787,22 @@ export function adminSaveXp(raw: unknown) {
 export function adminResetXp() {
   const cfg = saveXpConfig(defaultXpConfig());
   logGame("ADMIN", "kill experience reset");
+  return cfg;
+}
+
+export function adminMapGlobals() {
+  return loadMapGlobals();
+}
+
+export function adminSaveMapGlobals(raw: unknown) {
+  const cfg = saveMapGlobals(raw);
+  logGame("ADMIN", "map globals saved");
+  return cfg;
+}
+
+export function adminResetMapGlobals() {
+  const cfg = saveMapGlobals(defaultMapGlobals());
+  logGame("ADMIN", "map globals reset");
   return cfg;
 }
 

@@ -19,6 +19,35 @@ const BEAT_KEYS = new Set(["combat.strike", "combat.dot", "combat.thorns", "comb
 const PREFIX_KEYS = new Set(["combat.crit", "combat.dodges", "combat.armor", "combat.barrier", "combat.chain"]);
 const FOLLOWER_KEYS = new Set(["combat.poison", "combat.bleed", "combat.burn", "combat.freeze", "combat.skip"]);
 
+function formatRefreshClock(ms: number) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function CityRefreshTimer({ at, onReady }: { at: number | null | undefined; onReady?: () => void }) {
+  const { t } = useI18n();
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!at || at <= Date.now()) return;
+    const tick = window.setInterval(() => setNowTs(Date.now()), 1000);
+    const wait = Math.max(0, at - Date.now());
+    const done = window.setTimeout(() => {
+      setNowTs(Date.now());
+      onReady?.();
+    }, wait + 80);
+    return () => {
+      window.clearInterval(tick);
+      window.clearTimeout(done);
+    };
+  }, [at, onReady]);
+  if (!at || at <= nowTs) return <span className="city-refresh-ready">{t("cityRefreshReady")}</span>;
+  return <span className="city-refresh-wait">{formatRefreshClock(at - nowTs)}</span>;
+}
+
 type FightLogLine = { t: number; text: string; key?: string; vars?: Record<string, string | number> };
 
 function takeFightClause(log: FightLogLine[], start: number) {
@@ -104,7 +133,10 @@ type CityInfo = {
   ownerName: string | null;
   activity: number;
   art: string;
-  unlocked: { depth: number; name: string }[];
+  unlocked: { depth: number; name: string; refreshAt?: number | null }[];
+  roadOpen?: boolean;
+  maxDepth?: number;
+  depthCapped?: boolean;
 };
 
 type GameState = {
@@ -123,7 +155,7 @@ type GameState = {
   region: { name: string; theme: string; description: string };
   grid: { cols: number; rows: number };
   storage: null | { items: Item[]; cols: number; rows: number; cells: number; level: number; upgradeCost: number };
-  pendingFight?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number; icon?: string }[] | null;
+  pendingFight?: BattleFoe[] | null;
   packOdds?: { two: number; three: number };
   city?: CityInfo | null;
 };
@@ -139,7 +171,7 @@ type Fight = {
   dead?: boolean;
   awaiting?: boolean;
   enemy: { name: string; kind: string; hp: number; id?: string; damage?: number; maxHp?: number; armor?: number; icon?: string };
-  enemies?: { id: string; name: string; kind: string; hp: number; maxHp: number; damage: number; armor?: number; icon?: string }[];
+  enemies?: BattleFoe[];
   log: { t: number; text: string; key?: string; vars?: Record<string, string | number> }[];
   gold?: number;
   loot?: Item[];
@@ -150,6 +182,7 @@ type Fight = {
   startPlayerHp?: number;
   playerMaxHp?: number;
   ore?: Item | null;
+  campGold?: number;
 };
 
 type HallHero = {
@@ -163,14 +196,13 @@ type HallHero = {
   lifesteal: number;
   luck: number;
   magicDamage: number;
-  pass: Record<string, number>;
   icon: string;
   portrait?: string;
   i18n: Record<string, { name: string; blurb: string }>;
 };
 
 function hallStartStats(h: HallHero) {
-  const s: Record<string, number> = {
+  return {
     health: h.health,
     damage: h.damage,
     armor: h.armor,
@@ -181,21 +213,16 @@ function hallStartStats(h: HallHero) {
     luck: h.luck,
     magicDamage: h.magicDamage,
   };
-  for (const [k, v] of Object.entries(h.pass || {})) {
-    if (!v || k === "healthPct") continue;
-    s[k] = (s[k] || 0) + v;
-  }
-  return s;
 }
 
 const HALL_STAT_KEYS = ["health", "damage", "magicDamage", "armor", "critChance", "critDamage", "dodge", "lifesteal", "luck", "regen"] as const;
 
 const FALLBACK_HALL: HallHero[] = [
-  { id: "Ironclad", health: 140, damage: 12, armor: 8, critChance: 5, critDamage: 150, dodge: 3, lifesteal: 0, luck: 0, magicDamage: 0, pass: { armor: 12, healthPct: 8 }, icon: "", i18n: {} },
-  { id: "Shadehand", health: 100, damage: 14, armor: 3, critChance: 12, critDamage: 175, dodge: 10, lifesteal: 4, luck: 0, magicDamage: 0, pass: { critChance: 8, dodge: 6, lifesteal: 4 }, icon: "", i18n: {} },
-  { id: "Thornbow", health: 110, damage: 13, armor: 4, critChance: 9, critDamage: 160, dodge: 7, lifesteal: 0, luck: 0, magicDamage: 0, pass: { luck: 10, critChance: 5 }, icon: "", i18n: {} },
-  { id: "Ashpriest", health: 95, damage: 8, armor: 3, critChance: 6, critDamage: 150, dodge: 5, lifesteal: 0, luck: 4, magicDamage: 14, pass: { regen: 2 }, icon: "", i18n: {} },
-  { id: "Warden", health: 125, damage: 13, armor: 6, critChance: 7, critDamage: 155, dodge: 5, lifesteal: 2, luck: 0, magicDamage: 0, pass: { armor: 6, healthPct: 4 }, icon: "", i18n: {} },
+  { id: "Ironclad", health: 140, damage: 12, armor: 8, critChance: 5, critDamage: 150, dodge: 3, lifesteal: 0, luck: 0, magicDamage: 0, icon: "", i18n: {} },
+  { id: "Shadehand", health: 100, damage: 14, armor: 3, critChance: 12, critDamage: 175, dodge: 10, lifesteal: 4, luck: 0, magicDamage: 0, icon: "", i18n: {} },
+  { id: "Thornbow", health: 110, damage: 13, armor: 4, critChance: 9, critDamage: 160, dodge: 7, lifesteal: 0, luck: 0, magicDamage: 0, icon: "", i18n: {} },
+  { id: "Ashpriest", health: 95, damage: 8, armor: 3, critChance: 6, critDamage: 150, dodge: 5, lifesteal: 0, luck: 4, magicDamage: 14, icon: "", i18n: {} },
+  { id: "Warden", health: 125, damage: 13, armor: 6, critChance: 7, critDamage: 155, dodge: 5, lifesteal: 2, luck: 0, magicDamage: 0, icon: "", i18n: {} },
 ];
 
 export default function App() {
@@ -216,6 +243,7 @@ export default function App() {
   const [battleFx, setBattleFx] = useState<BattleFx | null>(null);
   const playingFight = useRef(false);
   const [foundOre, setFoundOre] = useState<Item | null>(null);
+  const [foundCampGold, setFoundCampGold] = useState<number | null>(null);
   const [hoverOre, setHoverOre] = useState<{ item: Item; x: number; y: number } | null>(null);
   const logBox = useRef<HTMLDivElement>(null);
   const [linkQ, setLinkQ] = useState<string | null>(null);
@@ -515,6 +543,7 @@ export default function App() {
             /* keep the replay even if the ledger hiccups */
           }
           if (fight.ore && !fight.loot?.length) setFoundOre(fight.ore);
+          if (fight.campGold && !fight.loot?.length) setFoundCampGold(fight.campGold);
         }
         setPlaybackDone(true);
       }
@@ -945,10 +974,8 @@ export default function App() {
         </div>
         <div className="statpills">
           <span className="pill pill-coins">
-            <span className="coin-ico" aria-hidden>
-              ●
-            </span>
             {t("crowns")} <b>{game.user.coins}</b>
+            <span className="coin-ico" aria-hidden />
           </span>
           <span className="pill">{t("roundOf", { round: c.round })}</span>
           <span className="pill">{t("depthOf", { n: c.depth || 1 })}</span>
@@ -1341,32 +1368,50 @@ export default function App() {
                 />
               </div>
               <div className="city-leave">
-                <button
-                  className="danger"
-                  onClick={async () => {
-                    try {
-                      await api("/game/leave-city", { method: "POST" });
-                      setMode("play");
-                      setFight(null);
-                      setPickCity(false);
-                      await reload();
-                    } catch (e) {
-                      setErr(te(e instanceof Error ? e.message : "The gate is shut"));
-                    }
-                  }}
-                >
-                  {t("continueMarch")}
-                </button>
+                {game.city?.roadOpen === false && !game.city?.depthCapped ? (
+                  <p className="muted">
+                    {t("continueMarchWait")}{" "}
+                    <CityRefreshTimer
+                      at={game.city.unlocked?.find((u) => u.depth === game.city?.depth)?.refreshAt}
+                      onReady={() => void reload()}
+                    />
+                  </p>
+                ) : null}
+                {game.city?.depthCapped ? (
+                  <HoverHint as="span" className="city-leave-tip" text={t("maxDepthReached")}>
+                    <button type="button" className="danger" disabled>
+                      {t("continueMarch")}
+                    </button>
+                  </HoverHint>
+                ) : (
+                  <button
+                    className="danger"
+                    disabled={game.city?.roadOpen === false}
+                    onClick={async () => {
+                      try {
+                        await api("/game/leave-city", { method: "POST" });
+                        setMode("play");
+                        setFight(null);
+                        setPickCity(false);
+                        await reload();
+                      } catch (e) {
+                        setErr(te(e instanceof Error ? e.message : "The gate is shut"));
+                      }
+                    }}
+                  >
+                    {t("continueMarch")}
+                  </button>
+                )}
               </div>
               {pickCity ? (
                 <div className="modal-back" onClick={() => setPickCity(false)}>
                   <div className="panel modal" onClick={(e) => e.stopPropagation()}>
                     <h3>{t("changeCity")}</h3>
                     <div className="city-pick-list">
-                      {(game.city?.unlocked || [{ depth: c.depth, name: game.city?.name || "" }]).map((u) => (
+                      {(game.city?.unlocked || [{ depth: c.depth, name: game.city?.name || "", refreshAt: null }]).map((u) => (
                         <button
                           key={u.depth}
-                          className={u.depth === game.city?.depth ? "gold" : ""}
+                          className={`city-pick-row${u.depth === game.city?.depth ? " gold" : ""}`}
                           onClick={async () => {
                             try {
                               await api("/city/switch", { method: "POST", body: { depth: u.depth } });
@@ -1377,7 +1422,10 @@ export default function App() {
                             }
                           }}
                         >
-                          {t("depthOf", { n: u.depth })} · {regionName(u.depth, u.name)}
+                          <span>
+                            {t("depthOf", { n: u.depth })} · {regionName(u.depth, u.name)}
+                          </span>
+                          <CityRefreshTimer at={u.refreshAt} onReady={() => void reload()} />
                         </button>
                       ))}
                     </div>
@@ -1508,10 +1556,13 @@ export default function App() {
           items={lootOffers}
           charLevel={c.level}
           log={fight?.log}
+          xpGain={fight?.xpGain}
+          campGold={fight?.campGold}
           setErr={setErr}
-          onDone={async (ore) => {
+          onDone={async (ore, campGold) => {
             await reload();
             if (ore) setFoundOre(ore);
+            if (campGold && !fight?.campGold) setFoundCampGold(campGold);
           }}
         />
       ) : null}
@@ -1546,6 +1597,19 @@ export default function App() {
             </button>
           </div>
           {hoverOre ? <ItemTooltip item={hoverOre.item} x={hoverOre.x} y={hoverOre.y} charLevel={c.level} /> : null}
+        </div>
+      ) : null}
+
+      {foundCampGold ? (
+        <div className="loot-pick-back">
+          <div className="panel loot-pick loot-pick-ore">
+            <div className="loot-pick-banner">{t("foundCampTitle")}</div>
+            <p className="muted loot-pick-hint">{t("foundCampHint")}</p>
+            <div className="loot-pick-camp-gold">{t("foundCampAmount", { n: foundCampGold })}</div>
+            <button className="gold" onClick={() => setFoundCampGold(null)}>
+              {t("foundCampTake")}
+            </button>
+          </div>
         </div>
       ) : null}
 

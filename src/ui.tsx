@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { Item } from "./api";
 import { PCT, STAT_KEYS, STAT_LABEL } from "./api";
 import { useI18n } from "./i18n";
@@ -63,16 +64,18 @@ export function statEntries(stats: Record<string, number>) {
   return out;
 }
 
-export function HintTooltip({ title, text, x, y }: { title?: string; text: string; x: number; y: number }) {
+export function HintTooltip({ title, text, x, y }: { title?: string; text?: string; x: number; y: number }) {
   return (
     <div
       className="tooltip parchment tip-short"
       style={{ left: Math.min(x + 12, window.innerWidth - 280), top: Math.min(y + 14, window.innerHeight - 140) }}
     >
       {title ? <strong>{title}</strong> : null}
-      <div className={title ? "muted" : undefined} style={title ? { marginTop: 4 } : undefined}>
-        {text}
-      </div>
+      {text ? (
+        <div className={title ? "muted" : undefined} style={title ? { marginTop: 4 } : undefined}>
+          {text}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -85,7 +88,7 @@ export function HoverHint({
   children,
 }: {
   title?: string;
-  text: string;
+  text?: string;
   className?: string;
   as?: "div" | "span";
   children: ReactNode;
@@ -95,13 +98,16 @@ export function HoverHint({
     <>
       <Tag
         className={className}
+        onPointerEnter={(e) => setTip({ x: e.clientX, y: e.clientY })}
+        onPointerMove={(e) => setTip({ x: e.clientX, y: e.clientY })}
+        onPointerLeave={() => setTip(null)}
         onMouseEnter={(e) => setTip({ x: e.clientX, y: e.clientY })}
         onMouseMove={(e) => setTip({ x: e.clientX, y: e.clientY })}
         onMouseLeave={() => setTip(null)}
       >
         {children}
       </Tag>
-      {tip ? <HintTooltip title={title} text={text} x={tip.x} y={tip.y} /> : null}
+      {tip && (title || text) ? createPortal(<HintTooltip title={title} text={text} x={tip.x} y={tip.y} />, document.body) : null}
     </>
   );
 }

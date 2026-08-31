@@ -1,7 +1,13 @@
 import { mineBandFor, rollOre, type OreId } from "./mineTables.ts";
+import { loadMapGlobals, rollCount } from "./mapTables.ts";
 
-export type NodeKind = "monster" | "elite" | "mystery" | "city" | "boss" | "mine";
-export type ResolvedKind = "monster" | "elite" | "city" | "loot" | "boss" | "mine";
+export type NodeKind = "monster" | "elite" | "mystery" | "city" | "boss" | "mine" | "camp";
+export type ResolvedKind = "monster" | "elite" | "city" | "loot" | "boss" | "mine" | "camp";
+export type FightKind = "normal" | "elite" | "boss" | "mine" | "camp";
+
+export function isGuardedKind(kind: string): kind is "mine" | "camp" {
+  return kind === "mine" || kind === "camp";
+}
 
 export type MarchNode = {
   id: string;
@@ -20,7 +26,8 @@ export type MarchState = {
   visited: string[];
   fled: string[];
   fledEdges: { from: string; to: string }[];
-  pendingFight?: { kind: "normal" | "elite" | "boss" | "mine"; enemyIds: string[]; ore?: OreId } | null;
+  pendingFight?: { kind: FightKind; enemyIds: string[]; ore?: OreId } | null;
+  fromCity?: boolean;
 };
 
 export type PublicMarch = {
@@ -44,11 +51,30 @@ function nid(floor: number, col: number) {
   return `f${floor}c${col}`;
 }
 
-function randKind(): "monster" | "elite" | "mystery" {
-  const r = Math.random();
-  if (r < 0.5) return "monster";
-  if (r < 0.78) return "elite";
-  return "mystery";
+function shuffle<T>(list: T[]) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const a = list[i]!;
+    list[i] = list[j]!;
+    list[j] = a;
+  }
+  return list;
+}
+
+function placeableMonsters(nodes: MarchNode[], skipIds?: Iterable<string>) {
+  const skip = new Set(skipIds || []);
+  return nodes.filter((node) => node.kind === "monster" && node.floor !== 10 && !skip.has(node.id));
+}
+
+function placeSpecials(nodes: MarchNode[], fromCity: boolean) {
+  const g = loadMapGlobals();
+  const pool = nodes.filter((n) => n.kind === "monster" && (!fromCity || n.floor >= 6));
+  shuffle(pool);
+  let i = 0;
+  const elites = rollCount(g.eliteMin, g.eliteMax);
+  const mysteries = rollCount(g.mysteryMin, g.mysteryMax);
+  for (let n = 0; n < elites && i < pool.length; n++, i++) pool[i]!.kind = "elite";
+  for (let n = 0; n < mysteries && i < pool.length; n++, i++) pool[i]!.kind = "mystery";
 }
 
 export function rollMystery(): ResolvedKind {
@@ -58,7 +84,22 @@ export function rollMystery(): ResolvedKind {
   return "loot";
 }
 
-export function generateMarch(depth = 1): MarchState {
+export function centralCity(state: MarchState) {
+  return state.nodes.find((n) => n.kind === "city" && n.floor === 5) || state.nodes.find((n) => n.kind === "city") || null;
+}
+
+export function seatAtCentralCity(state: MarchState) {
+  const city = centralCity(state);
+  if (!city) return state;
+  state.current = city.id;
+  state.pending = null;
+  state.pendingFight = null;
+  state.fromCity = true;
+  if (!state.visited.includes(city.id)) state.visited.push(city.id);
+  return state;
+}
+
+export function generateMarch(depth = 1, opts?: { fromCity?: boolean }): MarchState {
   const nodes: MarchNode[] = [];
   const byId = new Map<string, MarchNode>();
 
@@ -69,16 +110,17 @@ export function generateMarch(depth = 1): MarchState {
     return node;
   }
 
+  const fromCity = !!opts?.fromCity;
   for (const col of [0, 1, 2]) add(1, col, "monster");
   for (const floor of [2, 3, 4]) {
-    for (const col of [0, 1, 2]) add(floor, col, randKind());
+    for (const col of [0, 1, 2]) add(floor, col, "monster");
   }
   add(5, 1, "city");
   for (const floor of [6, 7, 8]) {
-    for (const col of [0, 1, 2]) add(floor, col, randKind());
+    for (const col of [0, 1, 2]) add(floor, col, "monster");
   }
   const cityCol = Math.floor(Math.random() * 3);
-  for (const col of [0, 1, 2]) add(9, col, col === cityCol ? "city" : randKind());
+  for (const col of [0, 1, 2]) add(9, col, col === cityCol ? "city" : "monster");
   add(10, 1, "boss");
 
   function link(a: string, b: string) {
@@ -116,34 +158,40 @@ export function generateMarch(depth = 1): MarchState {
   weave(8, 9);
   for (const c of [0, 1, 2]) link(nid(9, c), nid(10, 1));
 
-  placeMines(nodes, depth);
+  placeSpecials(nodes, fromCity);
+  const skipLow = fromCity ? nodes.filter((n) => n.floor < 5).map((n) => n.id) : undefined;
+  placeMines(nodes, depth, skipLow);
+  placeCamps(nodes, skipLow);
 
-  return { nodes, current: null, pending: null, visited: [], fled: [], fledEdges: [] };
+  const state: MarchState = { nodes, current: null, pending: null, visited: [], fled: [], fledEdges: [], fromCity };
+  if (fromCity) seatAtCentralCity(state);
+  return state;
 }
 
 export function placeMines(nodes: MarchNode[], depth: number, skipIds?: Iterable<string>) {
   const band = mineBandFor(depth);
   const n = band.minMines + Math.floor(Math.random() * (band.maxMines - band.minMines + 1));
   if (n <= 0) return;
-  const skip = new Set(skipIds || []);
-  const pool = nodes.filter(
-    (node) =>
-      node.kind !== "city" &&
-      node.kind !== "boss" &&
-      node.kind !== "mine" &&
-      node.floor !== 10 &&
-      !skip.has(node.id)
-  );
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const a = pool[i]!;
-    pool[i] = pool[j]!;
-    pool[j] = a;
-  }
+  const pool = placeableMonsters(nodes, skipIds);
+  shuffle(pool);
   for (let i = 0; i < n && i < pool.length; i++) {
     const node = pool[i]!;
     node.kind = "mine";
     node.ore = rollOre(band.weights);
+    node.resolved = undefined;
+  }
+}
+
+export function placeCamps(nodes: MarchNode[], skipIds?: Iterable<string>) {
+  const g = loadMapGlobals();
+  const n = rollCount(g.campMin, g.campMax);
+  if (n <= 0) return;
+  const pool = placeableMonsters(nodes, skipIds);
+  shuffle(pool);
+  for (let i = 0; i < n && i < pool.length; i++) {
+    const node = pool[i]!;
+    node.kind = "camp";
+    node.ore = undefined;
     node.resolved = undefined;
   }
 }
@@ -166,13 +214,17 @@ export function parseMarch(raw: unknown): MarchState | null {
       pendingFight: s.pendingFight && Array.isArray(s.pendingFight.enemyIds)
         ? {
             kind:
-              s.pendingFight.kind === "elite" || s.pendingFight.kind === "boss" || s.pendingFight.kind === "mine"
+              s.pendingFight.kind === "elite" ||
+              s.pendingFight.kind === "boss" ||
+              s.pendingFight.kind === "mine" ||
+              s.pendingFight.kind === "camp"
                 ? s.pendingFight.kind
                 : "normal",
             enemyIds: s.pendingFight.enemyIds.map(String),
             ore: s.pendingFight.ore,
           }
         : null,
+      fromCity: !!s.fromCity,
     };
   } catch {
     return null;
@@ -181,10 +233,24 @@ export function parseMarch(raw: unknown): MarchState | null {
 
 export function openExits(state: MarchState): string[] {
   const blocked = new Set([...state.visited, ...state.fled]);
-  if (!state.current) return state.nodes.filter((n) => n.floor === 1 && !blocked.has(n.id)).map((n) => n.id);
+  const startFloor = state.fromCity ? 5 : 1;
+  if (!state.current) {
+    if (state.fromCity) {
+      const city = centralCity(state);
+      if (city) return city.next.filter((id) => !blocked.has(id));
+    }
+    return state.nodes.filter((n) => n.floor === startFloor && !blocked.has(n.id)).map((n) => n.id);
+  }
   const cur = state.nodes.find((n) => n.id === state.current);
-  if (!cur) return state.nodes.filter((n) => n.floor === 1 && !blocked.has(n.id)).map((n) => n.id);
-  return cur.next.filter((id) => !blocked.has(id));
+  if (!cur) return state.nodes.filter((n) => n.floor === startFloor && !blocked.has(n.id)).map((n) => n.id);
+  return cur.next.filter((id) => {
+    if (blocked.has(id)) return false;
+    if (state.fromCity) {
+      const dest = state.nodes.find((n) => n.id === id);
+      if (dest && dest.floor < 5) return false;
+    }
+    return true;
+  });
 }
 
 export function reachableIds(state: MarchState): string[] {
@@ -221,10 +287,11 @@ export function toPublicMarch(state: MarchState): PublicMarch {
   };
 }
 
-export function combatKind(resolved: ResolvedKind | NodeKind): "normal" | "elite" | "boss" | "mine" | null {
+export function combatKind(resolved: ResolvedKind | NodeKind): FightKind | null {
   if (resolved === "monster") return "normal";
   if (resolved === "elite") return "elite";
   if (resolved === "boss") return "boss";
   if (resolved === "mine") return "mine";
+  if (resolved === "camp") return "camp";
   return null;
 }

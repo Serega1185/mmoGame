@@ -629,6 +629,18 @@ api.post("/admin/packs/reset", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminResetPackTables());
 });
 
+api.get("/admin/map-globals", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminMapGlobals());
+});
+
+api.post("/admin/map-globals", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveMapGlobals(req.body));
+});
+
+api.post("/admin/map-globals/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetMapGlobals());
+});
+
 api.get("/admin/mines", requireAuth, requireAdmin, (_req, res) => {
   res.json(game.adminMineTables());
 });

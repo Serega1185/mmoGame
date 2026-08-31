@@ -26,13 +26,17 @@ export function LootPick({
   items,
   charLevel,
   log,
+  xpGain,
+  campGold,
   onDone,
   setErr,
 }: {
   items: Item[];
   charLevel: number;
   log?: FightLogLine[];
-  onDone: (ore?: Item | null) => Promise<void>;
+  xpGain?: number;
+  campGold?: number;
+  onDone: (ore?: Item | null, campGold?: number) => Promise<void>;
   setErr: (s: string) => void;
 }) {
   const { t, te, itemName, combatLine } = useI18n();
@@ -44,8 +48,8 @@ export function LootPick({
     if (busy) return;
     setBusy(true);
     try {
-      const r = await api<{ ore?: Item | null }>("/game/loot", { method: "POST", body: { instanceId: id } });
-      await onDone(r.ore);
+      const r = await api<{ ore?: Item | null; campGold?: number }>("/game/loot", { method: "POST", body: { instanceId: id } });
+      await onDone(r.ore, r.campGold);
     } catch (e) {
       setErr(te(e instanceof Error ? e.message : "Denied"));
     } finally {
@@ -85,6 +89,12 @@ export function LootPick({
               </button>
             ))}
           </div>
+          {xpGain || campGold ? (
+            <div className="loot-pick-rewards">
+              {xpGain ? <div>{t("lootPickXp", { n: xpGain })}</div> : null}
+              {campGold ? <div className="loot-pick-reward-gold">{t("lootPickCoins", { n: campGold })}</div> : null}
+            </div>
+          ) : null}
           <button disabled={busy} onClick={() => choose(null)}>
             {t("skipSpoils")}
           </button>

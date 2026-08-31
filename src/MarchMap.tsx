@@ -31,8 +31,21 @@ export function canFleeMarch(march: MarchView): boolean {
 
 const W = 360;
 const H = 740;
-const MIN_ZOOM = 0.55;
+const MIN_ZOOM = 1;
 const MAX_ZOOM = 2.4;
+
+const LEGEND_KINDS = ["monster", "elite", "mystery", "city", "camp", "mine", "boss"] as const;
+
+function nodeGlyph(kind: string) {
+  if (kind === "mystery") return "?";
+  if (kind === "city") return "⌂";
+  if (kind === "boss") return "☠";
+  if (kind === "elite") return "♛";
+  if (kind === "loot") return "◆";
+  if (kind === "mine") return "⛏";
+  if (kind === "camp") return "⚑";
+  return "⚔";
+}
 
 function pos(n: MarchNodeView) {
   const x = n.floor === 5 || n.floor === 10 ? W / 2 : 48 + n.col * 132;
@@ -48,6 +61,7 @@ function NodeIcon({ kind }: { kind: string }) {
   if (kind === "elite") return <text {...props}>♛</text>;
   if (kind === "loot") return <text {...props}>◆</text>;
   if (kind === "mine") return <text {...props} className="map-glyph map-glyph-mine">⛏</text>;
+  if (kind === "camp") return <text {...props}>⚑</text>;
   return <text {...props}>⚔</text>;
 }
 
@@ -135,6 +149,22 @@ export function MarchMap({
       <p className="muted map-hint">{t("mapHint")}</p>
       <div className="march-pan" ref={panBox} onMouseDown={onPanDown}>
         <div
+          className="map-legend"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {LEGEND_KINDS.map((kind) => (
+            <div key={kind} className="map-legend-row">
+              <span className={`map-legend-glyph${kind === "boss" ? " map-legend-boss" : kind === "mine" ? " map-legend-mine" : ""}`}>
+                {nodeGlyph(kind)}
+              </span>
+              <span>
+                <strong>{t(`node_${kind}` as "node_monster")}</strong>
+                <span className="muted">{t(`nodeTip_${kind}` as "nodeTip_monster")}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        <div
           className="pack-odds"
           onMouseDown={(e) => e.stopPropagation()}
           onMouseEnter={(e) => setTip({ pack: true, x: e.clientX, y: e.clientY })}
@@ -144,7 +174,7 @@ export function MarchMap({
           <div>{t("packOddsTwo", { n: packTwo })}</div>
           <div>{t("packOddsThree", { n: packThree })}</div>
         </div>
-        <svg className="march-svg" viewBox={`0 0 ${W} ${H}`} role="img" style={{ width: W * scale, height: H * scale }}>
+        <svg className="march-svg" viewBox={`0 0 ${W} ${H}`} role="img" style={{ width: W * scale, height: Math.max(H, H * scale) }}>
           {march.nodes.flatMap((n) =>
             n.next.map((nid) => {
               const b = byId.get(nid);
@@ -221,10 +251,14 @@ export function MarchMap({
           style={{ left: Math.min(tip.x + 14, window.innerWidth - 260), top: Math.min(tip.y + 14, window.innerHeight - 90) }}
         >
           <strong>
-            {tip.kind === "mine" ? t(tip.ore ? (`node_mine_${tip.ore}` as "node_mine_copper") : "node_mine") : t(`node_${tip.kind}` as "node_monster")}
+            {tip.kind === "mine"
+              ? t(tip.ore ? (`node_mine_${tip.ore}` as "node_mine_copper") : "node_mine")
+              : t(`node_${tip.kind}` as "node_monster")}
           </strong>
           <div className="muted">
-            {tip.kind === "mine" ? t("nodeTip_mine") : t(`nodeTip_${tip.kind}` as "nodeTip_monster")}
+            {tip.kind === "mine" || tip.kind === "camp"
+              ? t(tip.kind === "camp" ? "nodeTip_camp" : "nodeTip_mine")
+              : t(`nodeTip_${tip.kind}` as "nodeTip_monster")}
           </div>
         </div>
       ) : null}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, STAT_KEYS } from "./api";
 import { useI18n } from "./i18n";
 import type { Item } from "./api";
@@ -7,17 +7,34 @@ import { HeroFace, HoverHint, ItemFace, ItemTooltip } from "./ui";
 const RARITIES = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"] as const;
 const DROP_KINDS = ["normal", "elite", "boss"] as const;
 
+function scrollEditIntoView(form: HTMLElement | null) {
+  if (!form) return;
+  const hall = form.closest(".admin-hall");
+  if (!(hall instanceof HTMLElement)) return;
+  const row = hall.querySelector(".admin-row-editing");
+  const target = row instanceof HTMLElement ? row : form;
+  const hallRect = hall.getBoundingClientRect();
+  const t = target.getBoundingClientRect();
+  const formRect = form.getBoundingClientRect();
+  const rowVisible = t.top >= hallRect.top - 2 && t.bottom <= hallRect.bottom;
+  const formStartVisible = formRect.top < hallRect.bottom - 72;
+  if (rowVisible && formStartVisible) return;
+  hall.scrollTop += t.top - hallRect.top;
+}
+
 type Rarity = (typeof RARITIES)[number];
 type DropKind = (typeof DROP_KINDS)[number];
 type RarityWeights = Record<Rarity, number>;
 type LevelRange = { min: number; max: number };
 type DropBand = {
   minDepth: number;
-  tables: Record<DropKind, RarityWeights>;
   beforeCity: LevelRange;
   afterCity: LevelRange;
 };
-type DropConfig = { bands: DropBand[] };
+type DropConfig = {
+  tables: Record<DropKind, RarityWeights>;
+  bands: DropBand[];
+};
 
 function defaultLevelRanges(minDepth: number): { beforeCity: LevelRange; afterCity: LevelRange } {
   const d = Math.max(1, Math.trunc(Number(minDepth) || 1));
@@ -84,23 +101,27 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
     load().catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
   }, [load, setErr, te]);
 
+  function patch(next: Partial<DropConfig>) {
+    if (!cfg) return;
+    setCfg({ ...cfg, ...next });
+    setNote("");
+  }
+
   function patchBand(i: number, next: DropBand) {
     if (!cfg) return;
     const bands = cfg.bands.slice();
     bands[i] = next;
-    setCfg({ bands });
+    setCfg({ ...cfg, bands });
     setNote("");
   }
 
-  function setWeight(i: number, kind: DropKind, rarity: Rarity, value: string) {
+  function setWeight(kind: DropKind, rarity: Rarity, value: string) {
     if (!cfg) return;
     const n = Number(value);
-    const band = cfg.bands[i]!;
-    patchBand(i, {
-      ...band,
+    patch({
       tables: {
-        ...band.tables,
-        [kind]: { ...band.tables[kind], [rarity]: Number.isFinite(n) && n >= 0 ? n : 0 },
+        ...cfg.tables,
+        [kind]: { ...cfg.tables[kind], [rarity]: Number.isFinite(n) && n >= 0 ? n : 0 },
       },
     });
   }
@@ -135,7 +156,7 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
     }
   }
 
-  if (!cfg) return <p className="muted">{t("adminDropsHint")}</p>;
+  if (!cfg?.tables || !cfg.bands) return <p className="muted">{t("adminDropsHint")}</p>;
 
   return (
     <div className="admin-drops">
@@ -151,6 +172,47 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
         />
         <span className="muted">{t("adminDropsLuckHint")}</span>
       </label>
+      <div className="admin-drop-band">
+          <table className="admin-drop-table">
+            <thead>
+              <tr>
+                <th />
+                {RARITIES.map((r) => (
+                  <th key={r}>{t(`rarity_${r}`)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {DROP_KINDS.map((kind) => (
+                <tr key={kind}>
+                  <td>
+                    {kind === "normal"
+                      ? t("adminDropsKindNormal")
+                      : kind === "elite"
+                        ? t("adminDropsKindElite")
+                        : t("adminDropsKindBoss")}
+                  </td>
+                  {RARITIES.map((r) => {
+                    const shown = withLuckPreview(cfg.tables[kind], luck);
+                    return (
+                    <td key={r}>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={Number(Number(cfg.tables[kind][r]).toFixed(3))}
+                        aria-label={`${kind} ${r} ${t("adminDropsWeight")}`}
+                        onChange={(e) => setWeight(kind, r, e.target.value)}
+                      />
+                      <span className="admin-drop-pct">{t("adminDropsChance", { n: pct(shown, r) })}</span>
+                    </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       {cfg.bands.map((band, i) => (
         <div key={`${band.minDepth}-${i}`} className="admin-drop-band">
           <div className="admin-drop-head">
@@ -167,7 +229,7 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
               <button
                 className="danger"
                 disabled={busy}
-                onClick={() => setCfg({ bands: cfg.bands.filter((_, j) => j !== i) })}
+                onClick={() => setCfg({ ...cfg, bands: cfg.bands.filter((_, j) => j !== i) })}
               >
                 {t("adminDropsRemoveBand")}
               </button>
@@ -239,45 +301,6 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
               />
             </label>
           </div>
-          <table className="admin-drop-table">
-            <thead>
-              <tr>
-                <th />
-                {RARITIES.map((r) => (
-                  <th key={r}>{t(`rarity_${r}`)}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {DROP_KINDS.map((kind) => (
-                <tr key={kind}>
-                  <td>
-                    {kind === "normal"
-                      ? t("adminDropsKindNormal")
-                      : kind === "elite"
-                        ? t("adminDropsKindElite")
-                        : t("adminDropsKindBoss")}
-                  </td>
-                  {RARITIES.map((r) => {
-                    const shown = withLuckPreview(band.tables[kind], luck);
-                    return (
-                    <td key={r}>
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={Number(Number(band.tables[kind][r]).toFixed(3))}
-                        aria-label={`${kind} ${r} ${t("adminDropsWeight")}`}
-                        onChange={(e) => setWeight(i, kind, r, e.target.value)}
-                      />
-                      <span className="admin-drop-pct">{t("adminDropsChance", { n: pct(shown, r) })}</span>
-                    </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       ))}
       <div className="admin-drop-actions">
@@ -288,20 +311,10 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
             const minDepth = last.minDepth + 5;
             const levels = defaultLevelRanges(minDepth);
             setCfg({
-              bands: [
-                ...cfg.bands,
-                {
-                  minDepth,
-                  tables: {
-                    normal: { ...last.tables.normal },
-                    elite: { ...last.tables.elite },
-                    boss: { ...last.tables.boss },
-                  },
-                  beforeCity: levels.beforeCity,
-                  afterCity: levels.afterCity,
-                },
-              ],
+              ...cfg,
+              bands: [...cfg.bands, { minDepth, beforeCity: levels.beforeCity, afterCity: levels.afterCity }],
             });
+            setNote("");
           }}
         >
           {t("adminDropsAddBand")}
@@ -517,6 +530,199 @@ function ShopRarityPanel({ setErr }: { setErr: (s: string) => void }) {
 
 type PackBand = { minDepth: number; two: number; three: number };
 type PackConfig = { bands: PackBand[] };
+type MapGlobals = {
+  refreshMinutes: number;
+  eliteMin: number;
+  eliteMax: number;
+  mysteryMin: number;
+  mysteryMax: number;
+  campMin: number;
+  campMax: number;
+  campCoins: number;
+  campDepthMul: number;
+};
+
+function MapGlobalsPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t, te } = useI18n();
+  const [cfg, setCfg] = useState<MapGlobals | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = useCallback(async () => {
+    setCfg(await api<MapGlobals>("/admin/map-globals"));
+  }, []);
+
+  useEffect(() => {
+    load().catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
+  }, [load, setErr, te]);
+
+  async function save() {
+    if (!cfg || busy) return;
+    setBusy(true);
+    try {
+      setCfg(await api<MapGlobals>("/admin/map-globals", { method: "POST", body: cfg }));
+      setNote(t("adminMapGlobalsSaved"));
+      setErr("");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!cfg) return null;
+
+  return (
+    <div className="admin-drop-band admin-xp-block">
+      <p className="muted">{t("adminMapGlobalsHint")}</p>
+      <div className="admin-drop-levels">
+        <HoverHint as="span" title={t("adminMapRefresh")} text={t("adminMapRefreshHint")}>
+          <label>
+            {t("adminMapRefresh")}
+            <input
+              type="number"
+              min={1}
+              max={10080}
+              value={cfg.refreshMinutes}
+              onChange={(e) => {
+                setCfg({ ...cfg, refreshMinutes: Math.max(1, Math.trunc(Number(e.target.value) || 1)) });
+                setNote("");
+              }}
+            />
+          </label>
+        </HoverHint>
+        <HoverHint as="span" title={t("adminMapElite")} text={t("adminMapEliteHint")}>
+          <label>
+            {t("adminMapElite")}
+            <span className="admin-drop-levels">
+              <input
+                type="number"
+                min={1}
+                max={4}
+                value={cfg.eliteMin}
+                onChange={(e) => {
+                  const eliteMin = Math.min(4, Math.max(1, Math.trunc(Number(e.target.value) || 1)));
+                  setCfg({ ...cfg, eliteMin, eliteMax: Math.max(eliteMin, cfg.eliteMax) });
+                  setNote("");
+                }}
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={1}
+                max={4}
+                value={cfg.eliteMax}
+                onChange={(e) => {
+                  const eliteMax = Math.min(4, Math.max(1, Math.trunc(Number(e.target.value) || 1)));
+                  setCfg({ ...cfg, eliteMax, eliteMin: Math.min(cfg.eliteMin, eliteMax) });
+                  setNote("");
+                }}
+              />
+            </span>
+          </label>
+        </HoverHint>
+        <HoverHint as="span" title={t("adminMapMystery")} text={t("adminMapMysteryHint")}>
+          <label>
+            {t("adminMapMystery")}
+            <span className="admin-drop-levels">
+              <input
+                type="number"
+                min={0}
+                max={8}
+                value={cfg.mysteryMin}
+                onChange={(e) => {
+                  const mysteryMin = Math.min(8, Math.max(0, Math.trunc(Number(e.target.value) || 0)));
+                  setCfg({ ...cfg, mysteryMin, mysteryMax: Math.max(mysteryMin, cfg.mysteryMax) });
+                  setNote("");
+                }}
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={0}
+                max={8}
+                value={cfg.mysteryMax}
+                onChange={(e) => {
+                  const mysteryMax = Math.min(8, Math.max(0, Math.trunc(Number(e.target.value) || 0)));
+                  setCfg({ ...cfg, mysteryMax, mysteryMin: Math.min(cfg.mysteryMin, mysteryMax) });
+                  setNote("");
+                }}
+              />
+            </span>
+          </label>
+        </HoverHint>
+        <HoverHint as="span" title={t("adminMapCamp")} text={t("adminMapCampHint")}>
+          <label>
+            {t("adminMapCamp")}
+            <span className="admin-drop-levels">
+              <input
+                type="number"
+                min={1}
+                max={2}
+                value={cfg.campMin}
+                onChange={(e) => {
+                  const campMin = Math.min(2, Math.max(1, Math.trunc(Number(e.target.value) || 1)));
+                  setCfg({ ...cfg, campMin, campMax: Math.max(campMin, cfg.campMax) });
+                  setNote("");
+                }}
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={1}
+                max={2}
+                value={cfg.campMax}
+                onChange={(e) => {
+                  const campMax = Math.min(2, Math.max(1, Math.trunc(Number(e.target.value) || 1)));
+                  setCfg({ ...cfg, campMax, campMin: Math.min(cfg.campMin, campMax) });
+                  setNote("");
+                }}
+              />
+            </span>
+          </label>
+        </HoverHint>
+        <HoverHint as="span" title={t("adminMapCampCoins")} text={t("adminMapCampCoinsHint")}>
+          <label>
+            {t("adminMapCampCoins")}
+            <input
+              type="number"
+              min={0}
+              max={1000000}
+              value={cfg.campCoins}
+              onChange={(e) => {
+                setCfg({ ...cfg, campCoins: Math.max(0, Math.trunc(Number(e.target.value) || 0)) });
+                setNote("");
+              }}
+            />
+          </label>
+        </HoverHint>
+        <HoverHint as="span" title={t("adminMapCampDepthMul")} text={t("adminMapCampDepthMulHint")}>
+          <label>
+            {t("adminMapCampDepthMul")}
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={cfg.campDepthMul}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setCfg({ ...cfg, campDepthMul: Number.isFinite(n) && n >= 0 ? n : 0 });
+                setNote("");
+              }}
+            />
+          </label>
+        </HoverHint>
+      </div>
+      <div className="admin-drop-actions">
+        <button className="gold" disabled={busy} onClick={() => void save()}>
+          {t("adminDropsSave")}
+        </button>
+        {note ? <span className="muted">{note}</span> : null}
+      </div>
+    </div>
+  );
+}
 
 function PacksPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te } = useI18n();
@@ -804,6 +1010,18 @@ function MinesPanel({ setErr }: { setErr: (s: string) => void }) {
   );
 }
 
+function MapPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="admin-drops">
+      <p className="muted">{t("adminMapHint")}</p>
+      <MapGlobalsPanel setErr={setErr} />
+      <PacksPanel setErr={setErr} />
+      <MinesPanel setErr={setErr} />
+    </div>
+  );
+}
+
 type ItemLocale = { name: string; flavor: string };
 type AdminItem = {
   id: string;
@@ -905,6 +1123,7 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
   const [sellPct, setSellPct] = useState(100);
   const [sellNote, setSellNote] = useState("");
   const [idLocked, setIdLocked] = useState(false);
+  const formRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const data = await api<{ items: AdminItem[]; sets: { id: string; name: string }[]; icons: string[]; sell_pct?: number }>(
@@ -931,6 +1150,15 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
         ? (a.i18n.ru.name || a.i18n.en.name).localeCompare(b.i18n.ru.name || b.i18n.en.name)
         : a.required_level - b.required_level || (a.i18n.en.name || a.id).localeCompare(b.i18n.en.name || b.id)
     );
+
+  const editingListed = !!(edit && idLocked && shown.some((it) => it.id === edit.id));
+  useEffect(() => {
+    if (!edit) return;
+    const t = window.setTimeout(() => {
+      requestAnimationFrame(() => scrollEditIntoView(formRef.current));
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [edit?.id]);
 
   function patchI18n(lang: "en" | "ru" | "zh", bit: Partial<ItemLocale>) {
     if (!edit) return;
@@ -1014,62 +1242,8 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
     }
   }
 
-  return (
-    <div className="admin-drops" style={{ maxWidth: 1100 }}>
-      <p className="muted">{t("adminItemsHint")}</p>
-      <div className="admin-drop-band admin-xp-block">
-        <div className="admin-drop-levels">
-          <label>
-            {t("adminItemsSellPct")}
-            <input
-              type="number"
-              min={0}
-              max={1000}
-              step="1"
-              value={sellPct}
-              onChange={(e) => {
-                setSellPct(Math.max(0, Math.min(1000, Math.trunc(Number(e.target.value) || 0))));
-                setSellNote("");
-              }}
-            />
-          </label>
-          <span className="muted">{t("adminItemsSellPctHint")}</span>
-        </div>
-        <div className="admin-drop-actions">
-          <button className="gold" disabled={busy} onClick={() => void saveSellPct()}>
-            {t("adminDropsSave")}
-          </button>
-          {sellNote ? <span className="muted">{sellNote}</span> : null}
-        </div>
-      </div>
-      <div className="admin-drop-head">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminItemsSearch")} />
-        <button className={sort === "level" ? "gold" : ""} onClick={() => setSort("level")}>
-          {t("adminItemsSortLevel")}
-        </button>
-        <button className={sort === "name" ? "gold" : ""} onClick={() => setSort("name")}>
-          {t("adminItemsSortName")}
-        </button>
-        <button
-          className="gold"
-          onClick={() => {
-            setIdLocked(false);
-            setRarityTab("Common");
-            setEdit({
-              ...EMPTY_ITEM,
-              id: `custom_${Date.now().toString(36)}`,
-              i18n: { en: { ...EMPTY_LOCALE }, ru: { ...EMPTY_LOCALE }, zh: { ...EMPTY_LOCALE } },
-              base_stats: {},
-              stats_by_rarity: EMPTY_RARITY_STATS(),
-              value_by_rarity: EMPTY_RARITY_VALUES(),
-            });
-          }}
-        >
-          {t("adminItemsNew")}
-        </button>
-      </div>
-      {edit ? (
-        <div className="admin-drop-band admin-item-form">
+  const itemForm = !edit ? null : (
+        <div ref={formRef} className="admin-drop-band admin-item-form">
           <label>
             id
             <input value={edit.id} disabled={idLocked} onChange={(e) => setEdit({ ...edit, id: e.target.value })} />
@@ -1241,7 +1415,63 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
             {note ? <span className="muted">{note}</span> : null}
           </div>
         </div>
-      ) : null}
+  );
+
+  return (
+    <div className="admin-drops" style={{ maxWidth: 1100 }}>
+      <p className="muted">{t("adminItemsHint")}</p>
+      <div className="admin-drop-band admin-xp-block">
+        <div className="admin-drop-levels">
+          <label>
+            {t("adminItemsSellPct")}
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              step="1"
+              value={sellPct}
+              onChange={(e) => {
+                setSellPct(Math.max(0, Math.min(1000, Math.trunc(Number(e.target.value) || 0))));
+                setSellNote("");
+              }}
+            />
+          </label>
+          <span className="muted">{t("adminItemsSellPctHint")}</span>
+        </div>
+        <div className="admin-drop-actions">
+          <button className="gold" disabled={busy} onClick={() => void saveSellPct()}>
+            {t("adminDropsSave")}
+          </button>
+          {sellNote ? <span className="muted">{sellNote}</span> : null}
+        </div>
+      </div>
+      <div className="admin-drop-head">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminItemsSearch")} />
+        <button className={sort === "level" ? "gold" : ""} onClick={() => setSort("level")}>
+          {t("adminItemsSortLevel")}
+        </button>
+        <button className={sort === "name" ? "gold" : ""} onClick={() => setSort("name")}>
+          {t("adminItemsSortName")}
+        </button>
+        <button
+          className="gold"
+          onClick={() => {
+            setIdLocked(false);
+            setRarityTab("Common");
+            setEdit({
+              ...EMPTY_ITEM,
+              id: `custom_${Date.now().toString(36)}`,
+              i18n: { en: { ...EMPTY_LOCALE }, ru: { ...EMPTY_LOCALE }, zh: { ...EMPTY_LOCALE } },
+              base_stats: {},
+              stats_by_rarity: EMPTY_RARITY_STATS(),
+              value_by_rarity: EMPTY_RARITY_VALUES(),
+            });
+          }}
+        >
+          {t("adminItemsNew")}
+        </button>
+      </div>
+      {edit && !editingListed ? itemForm : null}
       <div className="admin-table-wrap">
         <table className="board-table admin-table">
           <thead>
@@ -1255,7 +1485,8 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
           </thead>
           <tbody>
             {shown.map((it) => (
-              <tr key={it.id}>
+              <Fragment key={it.id}>
+              <tr className={editingListed && edit?.id === it.id ? "admin-row-editing" : undefined}>
                 <td>
                   <div className="admin-item-name">
                     <div
@@ -1307,6 +1538,12 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
                   </div>
                 </td>
               </tr>
+              {edit && editingListed && edit.id === it.id ? (
+                <tr className="admin-edit-row">
+                  <td colSpan={5}>{itemForm}</td>
+                </tr>
+              ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -1394,6 +1631,7 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
   const [note, setNote] = useState("");
   const [xpNote, setXpNote] = useState("");
   const [idLocked, setIdLocked] = useState(false);
+  const formRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const data = await api<{
@@ -1423,6 +1661,15 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
         ? (a.i18n.ru || a.i18n.en || a.id).localeCompare(b.i18n.ru || b.i18n.en || b.id)
         : a.region - b.region || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id)
     );
+
+  const editingListed = !!(edit && idLocked && shown.some((e) => e.id === edit.id));
+  useEffect(() => {
+    if (!edit) return;
+    const t = window.setTimeout(() => {
+      requestAnimationFrame(() => scrollEditIntoView(formRef.current));
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [edit?.id]);
 
   function patchName(lang: "en" | "ru" | "zh", name: string) {
     if (!edit) return;
@@ -1518,85 +1765,8 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
     }
   }
 
-  return (
-    <div className="admin-drops" style={{ maxWidth: 1100 }}>
-      <p className="muted">{t("adminEnemiesHint")}</p>
-      {xp ? (
-        <div className="admin-drop-band admin-xp-block">
-          <div className="section-title">{t("adminEnemiesXpTitle")}</div>
-          <p className="muted">{t("adminEnemiesXpHint")}</p>
-          <div className="admin-drop-levels">
-            {XP_KINDS.map((kind) => (
-              <label key={kind}>
-                {kind === "normal"
-                  ? t("adminDropsKindNormal")
-                  : kind === "elite"
-                    ? t("adminDropsKindElite")
-                    : t("adminDropsKindBoss")}
-                <input
-                  type="number"
-                  min={0}
-                  step="1"
-                  value={xp[kind]}
-                  onChange={(e) => {
-                    const n = Math.max(0, Math.trunc(Number(e.target.value) || 0));
-                    setXp({ ...xp, [kind]: n });
-                    setXpNote("");
-                  }}
-                />
-              </label>
-            ))}
-            <label>
-              {t("adminEnemiesXpDepthMul")}
-              <input
-                type="number"
-                min={0}
-                step="0.1"
-                value={xp.depthMul}
-                onChange={(e) => {
-                  const n = Number(e.target.value);
-                  setXp({ ...xp, depthMul: Number.isFinite(n) && n >= 0 ? n : 0 });
-                  setXpNote("");
-                }}
-              />
-            </label>
-          </div>
-          <div className="admin-drop-actions">
-            <button className="gold" disabled={busy} onClick={() => void saveXp()}>
-              {t("adminDropsSave")}
-            </button>
-            {xpNote ? <span className="muted">{xpNote}</span> : null}
-          </div>
-        </div>
-      ) : null}
-      <div className="admin-drop-head">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminEnemiesSearch")} />
-        <button className={sort === "depth" ? "gold" : ""} onClick={() => setSort("depth")}>
-          {t("adminEnemiesSortDepth")}
-        </button>
-        <button className={sort === "name" ? "gold" : ""} onClick={() => setSort("name")}>
-          {t("adminEnemiesSortName")}
-        </button>
-        <button
-          className="gold"
-          onClick={() => {
-            setIdLocked(false);
-            setEdit({
-              ...EMPTY_ENEMY,
-              id: `foe_${Date.now().toString(36)}`,
-              region: regions[0]?.id || 1,
-              i18n: { en: "", ru: "", zh: "" },
-              abilities: [],
-              potency: { ...EMPTY_POTENCY },
-              icon: "",
-            });
-          }}
-        >
-          {t("adminEnemiesNew")}
-        </button>
-      </div>
-      {edit ? (
-        <div className="admin-drop-band admin-item-form">
+  const enemyForm = !edit ? null : (
+        <div ref={formRef} className="admin-drop-band admin-item-form">
           <div className="admin-stats-grid">
             <label>
               id
@@ -1851,7 +2021,86 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
             {note ? <span className="muted">{note}</span> : null}
           </div>
         </div>
+  );
+
+  return (
+    <div className="admin-drops" style={{ maxWidth: 1100 }}>
+      <p className="muted">{t("adminEnemiesHint")}</p>
+      {xp ? (
+        <div className="admin-drop-band admin-xp-block">
+          <div className="section-title">{t("adminEnemiesXpTitle")}</div>
+          <p className="muted">{t("adminEnemiesXpHint")}</p>
+          <div className="admin-drop-levels">
+            {XP_KINDS.map((kind) => (
+              <label key={kind}>
+                {kind === "normal"
+                  ? t("adminDropsKindNormal")
+                  : kind === "elite"
+                    ? t("adminDropsKindElite")
+                    : t("adminDropsKindBoss")}
+                <input
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={xp[kind]}
+                  onChange={(e) => {
+                    const n = Math.max(0, Math.trunc(Number(e.target.value) || 0));
+                    setXp({ ...xp, [kind]: n });
+                    setXpNote("");
+                  }}
+                />
+              </label>
+            ))}
+            <label>
+              {t("adminEnemiesXpDepthMul")}
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={xp.depthMul}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setXp({ ...xp, depthMul: Number.isFinite(n) && n >= 0 ? n : 0 });
+                  setXpNote("");
+                }}
+              />
+            </label>
+          </div>
+          <div className="admin-drop-actions">
+            <button className="gold" disabled={busy} onClick={() => void saveXp()}>
+              {t("adminDropsSave")}
+            </button>
+            {xpNote ? <span className="muted">{xpNote}</span> : null}
+          </div>
+        </div>
       ) : null}
+      <div className="admin-drop-head">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminEnemiesSearch")} />
+        <button className={sort === "depth" ? "gold" : ""} onClick={() => setSort("depth")}>
+          {t("adminEnemiesSortDepth")}
+        </button>
+        <button className={sort === "name" ? "gold" : ""} onClick={() => setSort("name")}>
+          {t("adminEnemiesSortName")}
+        </button>
+        <button
+          className="gold"
+          onClick={() => {
+            setIdLocked(false);
+            setEdit({
+              ...EMPTY_ENEMY,
+              id: `foe_${Date.now().toString(36)}`,
+              region: regions[0]?.id || 1,
+              i18n: { en: "", ru: "", zh: "" },
+              abilities: [],
+              potency: { ...EMPTY_POTENCY },
+              icon: "",
+            });
+          }}
+        >
+          {t("adminEnemiesNew")}
+        </button>
+      </div>
+      {edit && !editingListed ? enemyForm : null}
       <div className="admin-table-wrap">
         <table className="board-table admin-table">
           <thead>
@@ -1866,7 +2115,8 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
           </thead>
           <tbody>
             {shown.map((e) => (
-              <tr key={e.id}>
+              <Fragment key={e.id}>
+              <tr className={editingListed && edit?.id === e.id ? "admin-row-editing" : undefined}>
                 <td>
                   {enemyName(e.id, e.i18n.ru || e.i18n.en) || e.i18n.ru || e.i18n.en}
                   <div className="muted">{e.id}</div>
@@ -1898,6 +2148,12 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
                   </div>
                 </td>
               </tr>
+              {edit && editingListed && edit.id === e.id ? (
+                <tr className="admin-edit-row">
+                  <td colSpan={6}>{enemyForm}</td>
+                </tr>
+              ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -1918,14 +2174,11 @@ type AdminHero = {
   lifesteal: number;
   luck: number;
   magicDamage: number;
-  pass: Record<string, number>;
   icon: string;
   portrait: string;
   starters: string[];
   i18n: Record<"en" | "ru" | "zh", { name: string; blurb: string }>;
 };
-
-const HERO_PASS_KEYS = ["armor", "critChance", "dodge", "luck", "lifesteal", "regen", "damage"] as const;
 
 function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te, heroName, itemName, reloadCatalog } = useI18n();
@@ -1952,12 +2205,6 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
   function patchNum(key: keyof AdminHero, value: number) {
     if (!edit) return;
     setEdit({ ...edit, [key]: value });
-    setNote("");
-  }
-
-  function patchPass(key: string, value: number) {
-    if (!edit) return;
-    setEdit({ ...edit, pass: { ...edit.pass, [key]: value } });
     setNote("");
   }
 
@@ -2003,7 +2250,6 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
           lifesteal: edit.lifesteal,
           luck: edit.luck,
           magicDamage: edit.magicDamage,
-          pass: edit.pass,
           icon: edit.icon,
           portrait: edit.portrait || "",
           starters: edit.starters || [],
@@ -2123,19 +2369,6 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
               </label>
             ))}
           </div>
-          <div className="muted" style={{ marginTop: 8 }}>{t("adminHeroesPass")}</div>
-          <div className="admin-hero-grid">
-            {HERO_PASS_KEYS.map((key) => (
-              <label key={key}>
-                {t(`stat_${key}`)}
-                <input
-                  type="number"
-                  value={edit.pass[key] || 0}
-                  onChange={(e) => patchPass(key, Number(e.target.value))}
-                />
-              </label>
-            ))}
-          </div>
           <div className="muted" style={{ marginTop: 12 }}>{t("adminHeroesStarters")}</div>
           {edit.starters?.length ? (
             <ul className="admin-starter-list">
@@ -2241,14 +2474,16 @@ function GatePanel({ setErr }: { setErr: (s: string) => void }) {
   const [version, setVersion] = useState("");
   const [maintenance, setMaintenance] = useState(false);
   const [message, setMessage] = useState("");
+  const [maxDepth, setMaxDepth] = useState(10);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
 
   const load = useCallback(async () => {
-    const data = await api<{ version: string; maintenance: boolean; message: string }>("/admin/gate");
+    const data = await api<{ version: string; maintenance: boolean; message: string; maxDepth?: number }>("/admin/gate");
     setVersion(data.version);
     setMaintenance(!!data.maintenance);
     setMessage(data.message || "");
+    setMaxDepth(Math.max(1, Math.trunc(Number(data.maxDepth) || 10)));
   }, []);
 
   useEffect(() => {
@@ -2259,13 +2494,14 @@ function GatePanel({ setErr }: { setErr: (s: string) => void }) {
     if (busy) return;
     setBusy(true);
     try {
-      const saved = await api<{ version: string; maintenance: boolean; message: string }>("/admin/gate", {
+      const saved = await api<{ version: string; maintenance: boolean; message: string; maxDepth?: number }>("/admin/gate", {
         method: "POST",
-        body: { version, maintenance, message },
+        body: { version, maintenance, message, maxDepth },
       });
       setVersion(saved.version);
       setMaintenance(!!saved.maintenance);
       setMessage(saved.message || "");
+      setMaxDepth(Math.max(1, Math.trunc(Number(saved.maxDepth) || 10)));
       setNote(t("adminGateSaved"));
       setErr("");
     } catch (e) {
@@ -2280,6 +2516,20 @@ function GatePanel({ setErr }: { setErr: (s: string) => void }) {
       <p className="muted">{t("adminGateHint")}</p>
       <label>{t("adminGateVersion")}</label>
       <input value={version} onChange={(e) => { setVersion(e.target.value); setNote(""); }} maxLength={40} />
+      <label>
+        {t("adminMaxDepth")}
+        <input
+          type="number"
+          min={1}
+          max={99}
+          value={maxDepth}
+          onChange={(e) => {
+            setMaxDepth(Math.max(1, Math.min(99, Math.trunc(Number(e.target.value) || 1))));
+            setNote("");
+          }}
+        />
+      </label>
+      <p className="muted">{t("adminMaxDepthHint")}</p>
       <label className="admin-gate-check">
         <input type="checkbox" checked={maintenance} onChange={(e) => { setMaintenance(e.target.checked); setNote(""); }} />
         {t("adminGateMaintenance")}
@@ -2312,7 +2562,7 @@ export function AdminView({
 }) {
   const { t, te, heroName } = useI18n();
   const [tab, setTab] = useState<
-    "wayfarers" | "guilds" | "drops" | "shop" | "packs" | "mines" | "items" | "enemies" | "heroes" | "gate"
+    "wayfarers" | "guilds" | "drops" | "shop" | "map" | "items" | "enemies" | "heroes" | "gate"
   >("wayfarers");
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [guilds, setGuilds] = useState<GuildRow[]>([]);
@@ -2366,11 +2616,8 @@ export function AdminView({
         <button className={tab === "shop" ? "gold" : ""} onClick={() => setTab("shop")}>
           {t("adminTabShop")}
         </button>
-        <button className={tab === "packs" ? "gold" : ""} onClick={() => setTab("packs")}>
-          {t("adminTabPacks")}
-        </button>
-        <button className={tab === "mines" ? "gold" : ""} onClick={() => setTab("mines")}>
-          {t("adminTabMines")}
+        <button className={tab === "map" ? "gold" : ""} onClick={() => setTab("map")}>
+          {t("adminTabMap")}
         </button>
         <button className={tab === "items" ? "gold" : ""} onClick={() => setTab("items")}>
           {t("adminTabItems")}
@@ -2392,10 +2639,8 @@ export function AdminView({
         <DropsPanel setErr={setErr} />
       ) : tab === "shop" ? (
         <ShopRarityPanel setErr={setErr} />
-      ) : tab === "packs" ? (
-        <PacksPanel setErr={setErr} />
-      ) : tab === "mines" ? (
-        <MinesPanel setErr={setErr} />
+      ) : tab === "map" ? (
+        <MapPanel setErr={setErr} />
       ) : tab === "items" ? (
         <ItemsPanel setErr={setErr} />
       ) : tab === "enemies" ? (

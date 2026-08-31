@@ -355,3 +355,11 @@ CREATE TABLE IF NOT EXISTS city_visits (
   visited_at INTEGER NOT NULL,
   PRIMARY KEY (character_id, city_depth)
 );
+
+CREATE TABLE IF NOT EXISTS character_maps (
+  character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  depth INTEGER NOT NULL,
+  map_state TEXT NOT NULL,
+  refresh_at INTEGER,
+  PRIMARY KEY (character_id, depth)
+);

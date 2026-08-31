@@ -1,4 +1,6 @@
 import { db, now } from "../db.ts";
+import { parkedMapsFor, roadIsOpen } from "./mapTables.ts";
+import { loadGate } from "./gate.ts";
 
 export const CITY_DEFAULT_TAX = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -21,7 +23,8 @@ export function hubDepthOf(character: Record<string, unknown>) {
 }
 
 export function unlockedCityMax(character: Record<string, unknown>, highestRegion: number) {
-  return Math.max(1, Math.trunc(Number(character.depth) || 1), Math.trunc(highestRegion) || 0);
+  const unlocked = Math.max(1, Math.trunc(Number(character.depth) || 1), Math.trunc(highestRegion) || 0);
+  return Math.min(unlocked, loadGate().maxDepth);
 }
 
 export function ensureCity(depth: number): CityRow {
@@ -70,8 +73,16 @@ export function publicCity(character: Record<string, unknown>) {
     : undefined;
   const user = db.prepare("SELECT highest_region FROM users WHERE id=?").get(character.user_id) as { highest_region: number };
   const maxD = unlockedCityMax(character, user.highest_region);
-  const unlocked: { depth: number; name: string }[] = [];
-  for (let d = 1; d <= maxD; d++) unlocked.push({ depth: d, name: cityNameFor(d) });
+  const parked = parkedMapsFor(String(character.id));
+  const refreshByDepth = new Map(parked.map((m) => [m.depth, m.refresh_at]));
+  const t = now();
+  const unlocked: { depth: number; name: string; refreshAt: number | null }[] = [];
+  for (let d = 1; d <= maxD; d++) {
+    const at = refreshByDepth.get(d) ?? null;
+    unlocked.push({ depth: d, name: cityNameFor(d), refreshAt: at && at > t ? at : null });
+  }
+  const cap = loadGate().maxDepth;
+  const here = Math.max(1, Number(character.depth) || depth);
   return {
     depth,
     name: city.name,
@@ -83,6 +94,9 @@ export function publicCity(character: Record<string, unknown>) {
     activity: cityActivity(depth),
     art: "/assets/art/gorod1.jpg",
     unlocked,
+    roadOpen: roadIsOpen(String(character.id), here),
+    maxDepth: cap,
+    depthCapped: here >= cap,
   };
 }
 

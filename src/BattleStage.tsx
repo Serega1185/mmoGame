@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "./i18n";
 import { HeroFace, HoverHint } from "./ui";
 
+export type FoeAbility = {
+  id: string;
+  n?: number;
+  p?: number;
+  d?: number;
+  h?: number;
+};
+
 export type BattleFoe = {
   id?: string;
   name: string;
@@ -11,6 +19,7 @@ export type BattleFoe = {
   damage: number;
   armor?: number;
   icon?: string;
+  abilities?: FoeAbility[];
 };
 
 export type BattleAura = {
@@ -129,7 +138,7 @@ function FloatNum({ fx, id }: { fx: BattleFx | null; id: string }) {
 
 function SwordMark() {
   return (
-    <svg className="sword-mark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e8dcc0" strokeWidth="1.8">
+    <svg className="sword-mark" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#e8dcc0" strokeWidth="1.8">
       <path d="M14 3 L19 8 L10 17 L6 19 L8 15 Z M9 14 L6 11" />
     </svg>
   );
@@ -146,7 +155,56 @@ function AuraIcon({ kind }: { kind: string }) {
   return <svg {...s} stroke="#9ad0e8"><path d="M12 3 L14 8 L19 8 L15 12 L17 18 L12 14 L7 18 L9 12 L5 8 L10 8 Z" /></svg>;
 }
 
+function AbilityIcon({ kind }: { kind: string }) {
+  const s = { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none" as const, strokeWidth: 2 };
+  if (kind === "heavy") {
+    return (
+      <svg {...s} stroke="#e0c078">
+        <path d="M8 13 L12 4 L16 13 Z M10 13 V21 H14 V13" />
+      </svg>
+    );
+  }
+  if (kind === "regen") {
+    return (
+      <svg {...s} stroke="#7ecb8a">
+        <path d="M12 5 V19 M5 12 H19" />
+      </svg>
+    );
+  }
+  if (kind === "undead") {
+    return (
+      <svg {...s} stroke="#c8c0e0">
+        <path d="M12 3 C8 3 6 7 6 11 C6 14 8 16 9 16 V20 H15 V16 C16 16 18 14 18 11 C18 7 16 3 12 3 Z M9.5 10.5 H10 M14 10.5 H14.5 M9.5 14 Q12 16 14.5 14" />
+      </svg>
+    );
+  }
+  if (kind === "bleed") return <svg {...s} stroke="#e07070"><path d="M12 3 C12 3 6 11 6 16 C6 19.3 8.7 21 12 21 C15.3 21 18 19.3 18 16 C18 11 12 3 12 3 Z" /></svg>;
+  if (kind === "poison") return <svg {...s} stroke="#7ecb6a"><path d="M10 4 H14 V8 L17 18 H7 L10 8 Z" /></svg>;
+  if (kind === "fire") return <svg {...s} stroke="#e8a050"><path d="M12 21 C8 21 7 16 10 13 C10 16 14 16 14 12 C18 15 16 21 12 21 Z M12 13 C11 9 13 7 12 4" /></svg>;
+  return <svg {...s} stroke="#d7c39a"><rect x="6" y="6" width="12" height="12" /></svg>;
+}
+
 const AURA_KEYS = ["armor", "barrier", "thorns", "bleed", "poison", "burn"] as const;
+
+function FoeAbilityRow({ abilities }: { abilities?: FoeAbility[] }) {
+  const { t } = useI18n();
+  const list = abilities || [];
+  return (
+    <div className="foe-abilities">
+      {list.map((a) => (
+        <HoverHint
+          key={a.id}
+          as="span"
+          className={`foe-ability a-${a.id}`}
+          title={t(`adminAbility_${a.id}`)}
+          text={t(`foeAbilityTip_${a.id}`, { n: a.n ?? 0, p: a.p ?? 0, d: a.d ?? 0, h: a.h ?? 0 })}
+        >
+          <AbilityIcon kind={a.id} />
+        </HoverHint>
+      ))}
+    </div>
+  );
+}
 
 function AuraRow({ aura }: { aura?: BattleAura }) {
   const { t } = useI18n();
@@ -282,12 +340,16 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
               const hurt = pulse && !pulse.heal && !pulse.dodge && pulse.def === id;
               const dodging = pulse && !!pulse.dodge && pulse.def === id;
               return (
-                <div key={`${id}-${i}`} className={`foe-card ${f.hp <= 0 ? "dead" : ""}`}>
+                <div key={`${id}-${i}`} className={`foe-card foe-slot-${i} k-${f.kind} ${f.hp <= 0 ? "dead" : ""}`}>
                   <div className="stub-host">
+                    <FoeAbilityRow abilities={f.abilities} />
                     <FloatNum fx={pulse} id={id} />
-                    <div className={`stub enemy-stub k-${f.kind}${f.icon ? " has-art" : ""} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""} ${dodging ? "dodging" : ""}`} title={label}>
+                    <HoverHint
+                      className={`stub enemy-stub k-${f.kind}${f.icon ? " has-art" : ""} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""} ${dodging ? "dodging" : ""}`}
+                      title={label}
+                    >
                       {f.icon ? <img src={f.icon} alt="" /> : null}
-                    </div>
+                    </HoverHint>
                   </div>
                   <div className="foe-meta">
                     <div className="foe-strike">

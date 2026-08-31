@@ -56,7 +56,6 @@ export function characterPower(character: { id: string; class: string; level: nu
   const lifesteal = hero?.lifesteal ?? fb.lifesteal;
   const luck = hero?.luck ?? 0;
   const magicDamage = hero?.magicDamage ?? 0;
-  const pass = hero?.pass ?? { ...fb.pass };
   let stats = emptyStats();
   stats.health = health;
   stats.damage = damage;
@@ -67,10 +66,6 @@ export function characterPower(character: { id: string; class: string; level: nu
   stats.lifesteal = lifesteal;
   stats.luck = luck;
   stats.magicDamage = magicDamage;
-  for (const [k, v] of Object.entries(pass)) {
-    if (!v || k === "healthPct") continue;
-    if (k in stats) stats[k as StatKey] += v;
-  }
   const gear = loadEquip(character.id);
   const setCount = new Map<string, number>();
   let isMagic = false;

@@ -87,6 +87,19 @@ try {
 }
 try {
   db.exec(
+    `CREATE TABLE IF NOT EXISTS character_maps (
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      depth INTEGER NOT NULL,
+      map_state TEXT NOT NULL,
+      refresh_at INTEGER,
+      PRIMARY KEY (character_id, depth)
+    )`
+  );
+} catch {
+  /* ignore */
+}
+try {
+  db.exec(
     `CREATE TABLE IF NOT EXISTS city_shop_items (
       id TEXT PRIMARY KEY,
       city_depth INTEGER NOT NULL,
