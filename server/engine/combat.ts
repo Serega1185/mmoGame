@@ -58,19 +58,18 @@ export function characterPower(character: { id: string; class: string; level: nu
   const magicDamage = hero?.magicDamage ?? 0;
   const pass = hero?.pass ?? { ...fb.pass };
   let stats = emptyStats();
-  const lv = Math.max(0, character.level - 1);
-  stats.health = health + lv * 12;
-  stats.damage = damage + lv * 2;
-  stats.armor = armor + Math.floor(lv * 0.6);
+  stats.health = health;
+  stats.damage = damage;
+  stats.armor = armor;
   stats.critChance = critChance;
   stats.critDamage = critDamage;
   stats.dodge = dodge;
   stats.lifesteal = lifesteal;
   stats.luck = luck;
-  stats.magicDamage = magicDamage + (magicDamage > 0 ? lv * 2 : 0);
+  stats.magicDamage = magicDamage;
   for (const [k, v] of Object.entries(pass)) {
-    if (k === "healthPct") stats.health = Math.round(stats.health * (1 + v / 100));
-    else if (k in stats) stats[k as StatKey] += v;
+    if (!v || k === "healthPct") continue;
+    if (k in stats) stats[k as StatKey] += v;
   }
   const gear = loadEquip(character.id);
   const setCount = new Map<string, number>();
@@ -201,7 +200,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
   const firstLiving = () => living()[0];
 
   function hitOne(att: Unit, def: Unit, incoming: number, physical: boolean) {
-    const miss = { hpHit: 0, thorns: null as { att: Unit; def: Unit; th: number } | null };
+    const miss = { hpHit: 0, thorns: null as { att: Unit; def: Unit; th: number } | null, connected: false };
     if (def.hp <= 0 || att.hp <= 0) return miss;
     let dmgIn = incoming;
     if (def.talents.has("veteran") && def.hp / def.maxHp > 0.8) dmgIn *= 0.95;
@@ -220,7 +219,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
           barrier: def.barrier,
         })
       );
-      return miss;
+      return { hpHit: 0, thorns: null, connected: false };
     }
     if (def.barrier > 0) {
       def.barrier -= 1;
@@ -236,7 +235,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
           barrier: def.barrier,
         })
       );
-      return miss;
+      return { hpHit: 0, thorns: null, connected: false };
     }
     const hadArmor = def.armorPool > 0;
     const { hpHit, soak } = applyRaw(def, dmgIn);
@@ -269,7 +268,7 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
       att.hp -= th;
       thorns = { att, def, th };
     }
-    return { hpHit, thorns };
+    return { hpHit, thorns, connected: true };
   }
 
   function applyOnHit(att: Unit, def: Unit) {
@@ -326,14 +325,16 @@ export function simulateCombat(playerIn: Combatant, enemies: Combatant | Combata
     }
 
     let totalHp = 0;
+    let primaryHit = false;
     const thornHits: { att: Unit; def: Unit; th: number }[] = [];
     for (const { u, portion } of targets) {
       if (portion <= 0 || u.hp <= 0) continue;
       const hit = hitOne(att, u, Math.max(1, Math.round(base * portion)), physical);
       totalHp += hit.hpHit;
+      if (u === primary && hit.connected) primaryHit = true;
       if (hit.thorns) thornHits.push(hit.thorns);
     }
-    applyOnHit(att, primary);
+    if (primaryHit) applyOnHit(att, primary);
     for (const t of thornHits) {
       log.push(
         line(tick, "combat.thorns", {

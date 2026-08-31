@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Item } from "./api";
 import { PCT, STAT_KEYS, STAT_LABEL } from "./api";
 import { useI18n } from "./i18n";
-import { itemIconSrc } from "./itemIcons";
+import { itemIconSrc, SET_MARK } from "./itemIcons";
 
 export function Glyph({ kind, size = 22 }: { kind: string; size?: number }) {
   const s = size;
@@ -145,7 +145,11 @@ export function ItemTooltip({ item, x, y, charLevel }: { item: Item; x: number; 
         {locked ? `  —  ${t("yourLevel", { n: charLevel! })}` : ""}
       </div>
       {item.definition.slot ? <div>{t("slot")}: {t(`slot_${item.definition.slot}`) || item.definition.slot}</div> : null}
-      {item.set ? <div>{t("set")}: {setName(item.set.id || item.set.name)}</div> : null}
+      {item.set ? (
+        <div className="tip-set">
+          {t("set")}: <span className="set-mark">{SET_MARK[item.set.id] || "◆"}</span>{setName(item.set.id || item.set.name)}
+        </div>
+      ) : null}
       <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
         {statEntries(item.stats).map(([k, v]) => {
           const range = item.statRanges?.[k];
@@ -194,7 +198,9 @@ export function SetTooltip({ set: s, x, y }: { set: SetTip; x: number; y: number
       className="tooltip parchment set-tip"
       style={{ left: Math.min(x + 14, window.innerWidth - 300), top: Math.min(y + 12, window.innerHeight - 260) }}
     >
-      <strong>{setName(s.setId || s.set)}</strong>
+      <strong>
+        <span className="set-mark">{SET_MARK[s.setId || ""] || "◆"}</span> {setName(s.setId || s.set)}
+      </strong>
       <div className="set-count">
         {t("setCollected", { have: s.pieces, need: size })}
       </div>

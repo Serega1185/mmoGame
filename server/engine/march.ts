@@ -18,6 +18,8 @@ export type MarchState = {
   current: string | null;
   pending: string | null;
   visited: string[];
+  fled: string[];
+  fledEdges: { from: string; to: string }[];
   pendingFight?: { kind: "normal" | "elite" | "boss" | "mine"; enemyIds: string[]; ore?: OreId } | null;
 };
 
@@ -33,6 +35,8 @@ export type PublicMarch = {
   current: string | null;
   pending: string | null;
   visited: string[];
+  fled: string[];
+  fledEdges: { from: string; to: string }[];
   reachable: string[];
 };
 
@@ -51,7 +55,6 @@ export function rollMystery(): ResolvedKind {
   const r = Math.random();
   if (r < 0.25) return "monster";
   if (r < 0.5) return "elite";
-  if (r < 0.75) return "city";
   return "loot";
 }
 
@@ -71,9 +74,11 @@ export function generateMarch(depth = 1): MarchState {
     for (const col of [0, 1, 2]) add(floor, col, randKind());
   }
   add(5, 1, "city");
-  for (const floor of [6, 7, 8, 9]) {
+  for (const floor of [6, 7, 8]) {
     for (const col of [0, 1, 2]) add(floor, col, randKind());
   }
+  const cityCol = Math.floor(Math.random() * 3);
+  for (const col of [0, 1, 2]) add(9, col, col === cityCol ? "city" : randKind());
   add(10, 1, "boss");
 
   function link(a: string, b: string) {
@@ -111,16 +116,9 @@ export function generateMarch(depth = 1): MarchState {
   weave(8, 9);
   for (const c of [0, 1, 2]) link(nid(9, c), nid(10, 1));
 
-  const extraCityPool = nodes.filter((n) => n.floor !== 1 && n.floor !== 5 && n.floor !== 10 && n.kind !== "city" && n.kind !== "boss");
-  if (extraCityPool.length) {
-    const extra = extraCityPool[Math.floor(Math.random() * extraCityPool.length)]!;
-    extra.kind = "city";
-    extra.ore = undefined;
-  }
-
   placeMines(nodes, depth);
 
-  return { nodes, current: null, pending: null, visited: [] };
+  return { nodes, current: null, pending: null, visited: [], fled: [], fledEdges: [] };
 }
 
 export function placeMines(nodes: MarchNode[], depth: number, skipIds?: Iterable<string>) {
@@ -133,7 +131,6 @@ export function placeMines(nodes: MarchNode[], depth: number, skipIds?: Iterable
       node.kind !== "city" &&
       node.kind !== "boss" &&
       node.kind !== "mine" &&
-      node.floor !== 5 &&
       node.floor !== 10 &&
       !skip.has(node.id)
   );
@@ -160,6 +157,12 @@ export function parseMarch(raw: unknown): MarchState | null {
       current: s.current ?? null,
       pending: s.pending ?? null,
       visited: Array.isArray(s.visited) ? s.visited.map(String) : [],
+      fled: Array.isArray(s.fled) ? s.fled.map(String) : [],
+      fledEdges: Array.isArray(s.fledEdges)
+        ? s.fledEdges
+            .filter((e: { from?: unknown; to?: unknown }) => e && e.from && e.to)
+            .map((e: { from: unknown; to: unknown }) => ({ from: String(e.from), to: String(e.to) }))
+        : [],
       pendingFight: s.pendingFight && Array.isArray(s.pendingFight.enemyIds)
         ? {
             kind:
@@ -176,12 +179,22 @@ export function parseMarch(raw: unknown): MarchState | null {
   }
 }
 
+export function openExits(state: MarchState): string[] {
+  const blocked = new Set([...state.visited, ...state.fled]);
+  if (!state.current) return state.nodes.filter((n) => n.floor === 1 && !blocked.has(n.id)).map((n) => n.id);
+  const cur = state.nodes.find((n) => n.id === state.current);
+  if (!cur) return state.nodes.filter((n) => n.floor === 1 && !blocked.has(n.id)).map((n) => n.id);
+  return cur.next.filter((id) => !blocked.has(id));
+}
+
 export function reachableIds(state: MarchState): string[] {
   if (state.pending) return [];
-  if (!state.current) return state.nodes.filter((n) => n.floor === 1).map((n) => n.id);
-  const cur = state.nodes.find((n) => n.id === state.current);
-  if (!cur) return state.nodes.filter((n) => n.floor === 1).map((n) => n.id);
-  return cur.next.filter((id) => !state.visited.includes(id));
+  return openExits(state);
+}
+
+export function canFlee(state: MarchState): boolean {
+  if (!state.pending) return false;
+  return openExits(state).length > 1;
 }
 
 export function displayKind(node: MarchNode, pending: string | null): NodeKind | "loot" {
@@ -202,6 +215,8 @@ export function toPublicMarch(state: MarchState): PublicMarch {
     current: state.current,
     pending: state.pending,
     visited: state.visited,
+    fled: state.fled,
+    fledEdges: state.fledEdges,
     reachable: reachableIds(state),
   };
 }

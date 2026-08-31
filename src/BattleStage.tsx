@@ -122,6 +122,7 @@ function FloatNum({ fx, id }: { fx: BattleFx | null; id: string }) {
       className={`float-dmg ${fx.heal ? "heal" : ""} ${fx.blocked ? "blocked" : ""} ${fx.crit ? "crit" : ""} ${fx.dot && !fx.heal ? "dot" : ""}`}
     >
       {fx.heal ? `+${fx.dealt}` : fx.dealt}
+      {fx.crit && !fx.heal ? <span className="crit-tag">{t("dmgCrit")}</span> : null}
     </div>
   );
 }
@@ -135,7 +136,7 @@ function SwordMark() {
 }
 
 function AuraIcon({ kind }: { kind: string }) {
-  const s = { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none" as const, strokeWidth: 2 };
+  const s = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none" as const, strokeWidth: 2 };
   if (kind === "armor") return <svg {...s} stroke="#c8c4bc"><path d="M12 3 L20 6 V12 C20 17 12 21 12 21 C12 21 4 17 4 12 V6 Z" /></svg>;
   if (kind === "barrier") return <svg {...s} stroke="#8ec8e8"><path d="M12 3 L20 8 L16 21 H8 L4 8 Z" /></svg>;
   if (kind === "thorns") return <svg {...s} stroke="#9ec87a"><path d="M12 21 L12 8 M12 8 L6 3 M12 8 L18 3" /></svg>;
@@ -178,7 +179,7 @@ function AuraRow({ aura }: { aura?: BattleAura }) {
     }
   }, [aura]);
 
-  if (!aura) return null;
+  if (!aura) return <div className="battle-auras" />;
   const buffs: { kind: (typeof AURA_KEYS)[number]; n: number; label: string }[] = [];
   const debs: { kind: string; n: number; label: string }[] = [];
   if (aura.armor > 0 || pops.armor) buffs.push({ kind: "armor", n: aura.armor, label: t("stat_armor") });
@@ -188,7 +189,6 @@ function AuraRow({ aura }: { aura?: BattleAura }) {
   if (aura.poison > 0 || pops.poison) debs.push({ kind: "poison", n: aura.poison, label: t("stat_poison") });
   if (aura.burn > 0 || pops.burn) debs.push({ kind: "burn", n: aura.burn, label: t("aura_burn") });
   if (aura.frozen) debs.push({ kind: "frozen", n: 1, label: t("aura_frozen") });
-  if (!buffs.length && !debs.length) return null;
 
   const pip = (b: { kind: string; n: number; label: string }, cls: string) => {
     const pop = pops[b.kind];
@@ -231,8 +231,9 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
     return () => cancelAnimationFrame(a);
   }, [fx]);
 
-  const playerStriking = pulse && !pulse.dot && !pulse.heal && !pulse.dodge && pulse.att === "player";
+  const playerStriking = pulse && !pulse.dot && !pulse.heal && pulse.att === "player";
   const playerHurt = pulse && !pulse.heal && !pulse.dodge && pulse.def === "player";
+  const playerDodging = pulse && !!pulse.dodge && pulse.def === "player";
 
   return (
     <div className="battle-stage">
@@ -241,7 +242,7 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
           <div className="stub-host">
             <FloatNum fx={pulse} id="player" />
             <div
-              className={`stub player-stub${playerIcon ? " has-art" : ""} ${playerStriking ? "striking" : ""} ${playerHurt ? "hurt" : ""}`}
+              className={`stub player-stub${playerIcon ? " has-art" : ""} ${playerStriking ? "striking" : ""} ${playerHurt ? "hurt" : ""} ${playerDodging ? "dodging" : ""}`}
               title={playerName}
             >
               <HeroFace icon={playerIcon} alt={playerName} />
@@ -277,13 +278,14 @@ export function BattleStage({ playerName, playerHp, playerMax, playerDamage, pla
               const max = Math.max(1, f.maxHp || f.hp);
               const label = enemyName(f.id, f.name) || f.name;
               const id = String(f.id || f.name);
-              const striking = pulse && !pulse.dot && !pulse.heal && !pulse.dodge && pulse.att === id;
+              const striking = pulse && !pulse.dot && !pulse.heal && pulse.att === id;
               const hurt = pulse && !pulse.heal && !pulse.dodge && pulse.def === id;
+              const dodging = pulse && !!pulse.dodge && pulse.def === id;
               return (
                 <div key={`${id}-${i}`} className={`foe-card ${f.hp <= 0 ? "dead" : ""}`}>
                   <div className="stub-host">
                     <FloatNum fx={pulse} id={id} />
-                    <div className={`stub enemy-stub k-${f.kind}${f.icon ? " has-art" : ""} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""}`} title={label}>
+                    <div className={`stub enemy-stub k-${f.kind}${f.icon ? " has-art" : ""} ${striking ? "striking" : ""} ${hurt ? "hurt" : ""} ${dodging ? "dodging" : ""}`} title={label}>
                       {f.icon ? <img src={f.icon} alt="" /> : null}
                     </div>
                   </div>

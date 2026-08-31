@@ -46,14 +46,11 @@ function upsertCatalog() {
   for (const s of SKILLS) upSk.run(s.id, s.name, s.description, JSON.stringify(s.stats));
 }
 
-function purgeUnequippableDefs() {
+function purgeRemovedDefs() {
   const keep = new Set(ITEM_DEFS.map((d) => d.id));
   const rows = db.prepare("SELECT id FROM item_definitions").all() as { id: string }[];
   for (const row of rows) {
-    const def = ITEM_DEFS.find((d) => d.id === row.id);
-    if (!keep.has(row.id)) continue;
-    const junk = def && !def.slot && def.category !== "ore";
-    if (!junk) continue;
+    if (keep.has(row.id) || row.id.startsWith("custom_")) continue;
     const inst = db.prepare("SELECT id FROM item_instances WHERE definition_id = ?").all(row.id) as { id: string }[];
     for (const it of inst) {
       db.prepare("DELETE FROM shop_items WHERE instance_id = ?").run(it.id);
@@ -62,13 +59,14 @@ function purgeUnequippableDefs() {
       db.prepare("DELETE FROM item_links WHERE instance_id = ?").run(it.id);
       db.prepare("DELETE FROM item_instances WHERE id=?").run(it.id);
     }
+    db.prepare("DELETE FROM item_i18n WHERE definition_id=?").run(row.id);
     db.prepare("DELETE FROM item_definitions WHERE id=?").run(row.id);
   }
 }
 
 export function refreshCatalog() {
   upsertCatalog();
-  purgeUnequippableDefs();
+  purgeRemovedDefs();
   db.prepare(
     `UPDATE item_instances SET location='INVENTORY', equip_slot=NULL, grid_x=NULL, grid_y=NULL
      WHERE equip_slot = 'Accessory'`
@@ -83,7 +81,7 @@ export function refreshCatalog() {
 export function seedIfEmpty() {
   const n = db.prepare("SELECT COUNT(*) AS c FROM item_definitions").get() as { c: number };
   upsertCatalog();
-  purgeUnequippableDefs();
+  purgeRemovedDefs();
   if (n.c === 0) {
 
     const insR = db.prepare(

@@ -3,7 +3,7 @@ import { RARITIES, RARITY_WEIGHTS, type Rarity } from "./stats.ts";
 import { emptyWeights } from "./dropTables.ts";
 
 export type RarityWeights = Record<Rarity, number>;
-export type ShopBand = { minDepth: number; weights: RarityWeights };
+export type ShopBand = { minDepth: number; weights: RarityWeights; itemMin: number; itemMax: number };
 export type ShopConfig = { bands: ShopBand[]; restockMinutes: number };
 
 export const DEFAULT_SHOP_RESTOCK_MINUTES = 30;
@@ -25,7 +25,18 @@ function cloneWeights(src?: Partial<RarityWeights>): RarityWeights {
   return out;
 }
 
+function defaultShopLevels(minDepth: number) {
+  const d = Math.max(1, Math.trunc(Number(minDepth) || 1));
+  return { itemMin: d, itemMax: d + 5 };
+}
+
+function clampLevel(raw: unknown, fallback: number) {
+  const n = Math.max(1, Math.trunc(Number(raw)));
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function defaultShopConfig(): ShopConfig {
+  const levels = defaultShopLevels(1);
   return {
     restockMinutes: DEFAULT_SHOP_RESTOCK_MINUTES,
     bands: [
@@ -39,6 +50,8 @@ export function defaultShopConfig(): ShopConfig {
           Legendary: 0,
           Mythic: 0,
         }),
+        itemMin: levels.itemMin,
+        itemMax: levels.itemMax,
       },
     ],
   };
@@ -54,8 +67,12 @@ export function normalizeShopConfig(raw: unknown): ShopConfig {
     if (!Number.isFinite(minDepth) || seen.has(minDepth)) continue;
     seen.add(minDepth);
     const weights = cloneWeights(b?.weights);
-    if (!Object.values(weights).some((v) => v > 0)) bands.push({ minDepth, weights: emptyWeights() });
-    else bands.push({ minDepth, weights });
+    const fb = defaultShopLevels(minDepth);
+    let itemMin = clampLevel(b?.itemMin, fb.itemMin);
+    let itemMax = clampLevel(b?.itemMax, fb.itemMax);
+    if (itemMax < itemMin) itemMax = itemMin;
+    if (!Object.values(weights).some((v) => v > 0)) bands.push({ minDepth, weights: emptyWeights(), itemMin, itemMax });
+    else bands.push({ minDepth, weights, itemMin, itemMax });
   }
   if (!bands.length) return fallback;
   bands.sort((a, c) => a.minDepth - c.minDepth);
@@ -86,12 +103,21 @@ export function shopRestockMs(cfg = loadShopConfig()) {
   return clampRestockMinutes(cfg.restockMinutes) * 60 * 1000;
 }
 
-export function shopWeightsFor(depth: number, cfg = loadShopConfig()): RarityWeights {
+export function shopBandFor(depth: number, cfg = loadShopConfig()): ShopBand {
   const d = Math.max(1, Math.trunc(Number(depth) || 1));
   let pick = cfg.bands[0]!;
   for (const b of cfg.bands) {
     if (b.minDepth <= d) pick = b;
     else break;
   }
-  return pick.weights;
+  return pick;
+}
+
+export function shopWeightsFor(depth: number, cfg = loadShopConfig()): RarityWeights {
+  return shopBandFor(depth, cfg).weights;
+}
+
+export function shopLevelRangeFor(depth: number, cfg = loadShopConfig()) {
+  const band = shopBandFor(depth, cfg);
+  return { min: band.itemMin, max: band.itemMax };
 }

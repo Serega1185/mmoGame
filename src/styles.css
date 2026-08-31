@@ -325,6 +325,9 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   min-height: 0;
   overflow: auto;
 }
+.left-panel.loot-peek {
+  z-index: 50;
+}
 .left-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
 .left-tabs button { flex: 1; padding: 0.35rem 0.4rem; font-size: 0.65rem; }
 .hero-vitals { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; overflow: visible; }
@@ -604,7 +607,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
     linear-gradient(#1a2830, #14120e 55%, #2a1410);
   border: 2px solid #2a2218;
   box-shadow: inset 0 0 40px #000;
-  padding: 16px 20px 12px;
+  padding: 16px 20px 28px;
   border-radius: 4px;
 }
 .battle-field {
@@ -614,7 +617,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   gap: 24px;
   min-height: 260px;
 }
-.battle-side { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.battle-side { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .foe-side {
   flex-direction: row;
   flex-wrap: wrap;
@@ -623,7 +626,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   gap: 12px;
   max-width: 58%;
 }
-.foe-card { display: flex; flex-direction: column; align-items: center; gap: 6px; overflow: visible; transition: opacity 0.55s ease; }
+.foe-card { display: flex; flex-direction: column; align-items: center; gap: 10px; overflow: visible; transition: opacity 0.55s ease; }
 .foe-card.dead { opacity: 0.4; }
 .stub {
   width: 56px;
@@ -636,14 +639,15 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
 }
 .player-stub { background: linear-gradient(#4a5a68, #2a343c); border-color: #8aa0b0; }
 .player-stub.has-art {
-  width: 175px;
-  height: 175px;
+  width: 200px;
+  height: 200px;
   padding: 0;
   overflow: visible;
   background: none;
   border: none;
   border-radius: 0;
   box-shadow: none;
+  transform: translateY(14px);
 }
 .player-stub.has-art .hero-face {
   width: 100%;
@@ -682,19 +686,35 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
 .stub.striking.enemy-stub {
   animation: lunge-enemy 0.62s cubic-bezier(0.22, 0.82, 0.28, 1);
 }
+.stub.dodging.player-stub {
+  animation: dodge-player 0.55s cubic-bezier(0.22, 0.82, 0.28, 1);
+}
+.stub.dodging.enemy-stub {
+  animation: dodge-enemy 0.55s cubic-bezier(0.22, 0.82, 0.28, 1);
+}
 .stub.hurt {
   animation: hurt-flash 0.7s ease;
 }
 @keyframes lunge-player {
-  0% { transform: translate(0, 0); }
-  30% { transform: translate(20px, -16px); }
-  55% { transform: translate(8px, 3px); }
-  100% { transform: translate(0, 0); }
+  0% { transform: translate(0, 14px); }
+  30% { transform: translate(20px, -2px); }
+  55% { transform: translate(8px, 17px); }
+  100% { transform: translate(0, 14px); }
 }
 @keyframes lunge-enemy {
   0% { transform: translate(0, 0); }
   30% { transform: translate(-20px, -16px); }
   55% { transform: translate(-8px, 3px); }
+  100% { transform: translate(0, 0); }
+}
+@keyframes dodge-player {
+  0% { transform: translate(0, 14px); }
+  26% { transform: translate(-24px, 4px); }
+  100% { transform: translate(0, 14px); }
+}
+@keyframes dodge-enemy {
+  0% { transform: translate(0, 0); }
+  26% { transform: translate(22px, -8px); }
   100% { transform: translate(0, 0); }
 }
 @keyframes hurt-flash {
@@ -717,9 +737,18 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   animation: float-dmg 0.85s ease-out forwards;
 }
 .float-dmg.crit {
-  color: #f3d78a;
-  font-size: 1.85rem;
-  text-shadow: 0 2px 0 #3a2808, 0 0 18px rgba(196, 122, 26, 0.55);
+  color: #ff3a2e;
+  font-size: 1.75rem;
+  white-space: nowrap;
+  text-shadow: 0 2px 0 #4a0808, 0 0 18px rgba(220, 28, 18, 0.7);
+}
+.float-dmg.crit .crit-tag {
+  display: inline-block;
+  margin-left: 0.28em;
+  font-size: 0.52em;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  vertical-align: 0.18em;
 }
 .float-dmg.dot {
   font-size: 1.25rem;
@@ -752,7 +781,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   width: 88px;
   overflow: visible;
 }
-.player-side .foe-meta { width: 175px; }
+.player-side .foe-meta { width: 200px; }
 .foe-strike {
   position: absolute;
   right: calc(100% + 4px);
@@ -771,25 +800,34 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   left: calc(100% + 4px);
 }
 .foe-hp { width: 88px; overflow: visible; }
-.player-side .foe-hp { width: 175px; overflow: visible; }
+.player-side .foe-hp { width: 200px; overflow: visible; position: relative; }
 .battle-auras {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  gap: 5px;
   justify-content: flex-start;
-  margin-top: 4px;
+  margin-top: 6px;
   overflow: visible;
+  min-height: 30px;
+}
+.player-side .battle-auras {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  width: 100%;
+  margin-top: 0;
+  min-height: 0;
 }
 .aura {
   position: relative;
   overflow: visible;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 1px 4px;
+  gap: 3px;
+  padding: 3px 6px;
   border: 1px solid #4a3a28;
   background: #16120e;
-  font-size: 0.62rem;
+  font-size: 0.78rem;
   line-height: 1;
   color: #e8e0d0;
   border-radius: 2px;
@@ -801,7 +839,7 @@ html[data-lang="ru"] h1, html[data-lang="ru"] h2, html[data-lang="ru"] h3 {
   bottom: calc(100% + 1px);
   transform: translateX(-50%);
   font-style: normal;
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   font-weight: 700;
   pointer-events: none;
   animation: aura-pop 0.9s ease-out forwards;
@@ -1345,7 +1383,50 @@ main {
   background: rgba(12, 8, 4, 0.45);
   pointer-events: none;
 }
+.start-fight-actions {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 10px;
+  align-items: stretch;
+  justify-content: center;
+  pointer-events: auto;
+}
+.start-fight-actions .start-fight-btn {
+  min-width: 11.5rem;
+  width: 100%;
+}
+.start-fight-actions .flee-tip-wrap {
+  display: flex;
+  flex-direction: column;
+}
 .start-fight-btn { pointer-events: auto; font-size: 1rem; padding: 0.7rem 1.4rem; }
+.start-fight-btn.flee-locked {
+  background: #2a2620;
+  border-color: #5a5348;
+  color: #8a8274;
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.flee-tip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.flee-only-tip {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  z-index: 4;
+  pointer-events: none;
+}
+.flee-tip-wrap:hover .flee-only-tip { display: block; }
 .last-spoils { text-align: center; margin: 4px 0 0; flex-shrink: 0; }
 .march-map {
   flex: 1;
@@ -1395,6 +1476,16 @@ main {
   stroke-dasharray: 4 5;
   fill: none;
 }
+.map-path.walked {
+  stroke: #c4a35a;
+  stroke-width: 2.6;
+  stroke-dasharray: none;
+}
+.map-path.fled {
+  stroke: #a83228;
+  stroke-width: 2.6;
+  stroke-dasharray: none;
+}
 .map-node { font-size: 14px; }
 .map-disk { fill: #24180f; stroke: #8a6a32; stroke-width: 1.5; }
 .map-ring { fill: none; stroke: transparent; stroke-width: 2; }
@@ -1402,7 +1493,31 @@ main {
 .map-node.reach .map-ring { stroke: rgba(212, 175, 55, 0.45); }
 .map-node.here .map-disk { fill: #4a3018; stroke: #e8c96a; }
 .map-node.here .map-ring { stroke: #e8c96a; }
-.map-node.seen .map-disk { opacity: 0.72; }
+.map-node.seen .map-disk { opacity: 0.9; }
+.map-check circle {
+  fill: #1a140c;
+  stroke: #d4af37;
+  stroke-width: 1.2;
+}
+.map-check path {
+  fill: none;
+  stroke: #e8c96a;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.map-node.fled .map-disk { fill: #1a1010; stroke: #8a3030; opacity: 0.85; }
+.map-cross circle {
+  fill: #1a0c0c;
+  stroke: #c45c4a;
+  stroke-width: 1.2;
+}
+.map-cross path {
+  fill: none;
+  stroke: #e07060;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
 .map-glyph { fill: #d8c4a0; font-size: 13px; pointer-events: none; }
 .map-glyph-boss { fill: #c45c4a; }
 .map-glyph-loot { fill: #7dba6a; }
@@ -1479,6 +1594,7 @@ main {
   gap: 16px;
   margin: 4px 0 14px;
   align-items: start;
+  min-height: 300px;
 }
 .hall-art {
   width: 148px;
@@ -1650,6 +1766,16 @@ main {
 .forge-slot.pos-2 { right: 18%; top: 92px; }
 .admin-hall { padding: 16px; width: 100%; flex: 1; min-height: 0; overflow: auto; }
 .admin-item-form { display: flex; flex-direction: column; gap: 10px; }
+.admin-rarity-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-item-name { display: flex; align-items: center; gap: 10px; }
+.admin-item-cell {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  display: block;
+  flex-shrink: 0;
+}
+.admin-item-cell .item-tile { pointer-events: none; }
 .admin-i18n { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 .admin-i18n-col { display: flex; flex-direction: column; gap: 6px; }
 .admin-stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
@@ -1702,6 +1828,14 @@ main {
   margin-bottom: 10px;
 }
 .admin-drop-head input[type="number"] { width: 72px; }
+.admin-drop-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.admin-drop-levels input[type="number"] { width: 64px; }
 .admin-luck-preview {
   display: flex;
   flex-wrap: wrap;
@@ -1729,6 +1863,9 @@ main {
   gap: 8px;
   margin: 12px 0;
 }
+.admin-xp-block .section-title { margin-bottom: 6px; }
+.admin-xp-block > .muted { margin: 0 0 10px; }
+.admin-xp-block .admin-drop-actions { margin-top: 10px; }
 .admin-drops textarea {
   width: 100%;
   min-height: 8rem;
@@ -1760,14 +1897,38 @@ main {
   inset: 0;
   z-index: 42;
   background: rgba(8, 5, 3, 0.72);
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
+  overflow: auto;
+}
+.loot-pick-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: min(720px, 96vw);
+  max-height: calc(100vh - 32px);
 }
 .loot-pick {
   width: min(720px, 96vw);
   padding: 20px 18px 16px;
   text-align: center;
+  flex-shrink: 0;
+}
+.loot-pick-stack .loot-pick { width: 100%; }
+.loot-fight-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 12px 12px;
+  text-align: left;
+}
+.loot-fight-log .section-title { margin-bottom: 8px; }
+.loot-fight-log .log {
+  height: min(220px, 28vh);
+  max-height: 220px;
 }
 .loot-pick-ore { width: min(380px, 96vw); }
 .loot-pick-banner {

@@ -158,6 +158,12 @@ api.post("/game/fight", requireAuth, (req, res) => {
   res.json(rest);
 });
 
+api.post("/game/flee", requireAuth, (req, res) => {
+  const r = game.fleeCombat(req.user!.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
 api.post("/game/advance", requireAuth, (req, res) => {
   const r = game.advanceAfterLoot(req.user!.id);
   if (r.error) return res.status(400).json({ error: r.error });
@@ -636,7 +642,11 @@ api.post("/admin/mines/reset", requireAuth, requireAdmin, (_req, res) => {
 });
 
 api.get("/admin/items", requireAuth, requireAdmin, (_req, res) => {
-  res.json({ items: game.adminItemDefs(), sets: game.adminSets(), icons: game.adminItemIcons() });
+  res.json({ items: game.adminItemDefs(), sets: game.adminSets(), icons: game.adminItemIcons(), sell_pct: game.adminSellPct().pct });
+});
+
+api.post("/admin/sell-pct", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveSellPct(req.body));
 });
 
 api.post("/admin/items", requireAuth, requireAdmin, (req, res) => {
@@ -677,8 +687,20 @@ api.post("/admin/gate", requireAuth, requireAdmin, (req, res) => {
   res.json(game.adminSaveGate(req.body));
 });
 
+api.get("/admin/xp", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminXp());
+});
+
+api.post("/admin/xp", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveXp(req.body));
+});
+
+api.post("/admin/xp/reset", requireAuth, requireAdmin, (_req, res) => {
+  res.json(game.adminResetXp());
+});
+
 api.get("/admin/enemies", requireAuth, requireAdmin, (_req, res) => {
-  res.json({ enemies: game.adminEnemyDefs(), regions: game.adminRegions(), icons: game.adminMobIcons() });
+  res.json({ enemies: game.adminEnemyDefs(), regions: game.adminRegions(), icons: game.adminMobIcons(), xp: game.adminXp() });
 });
 
 api.post("/admin/enemies", requireAuth, requireAdmin, (req, res) => {

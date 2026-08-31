@@ -2,7 +2,7 @@ import { db } from "../db.ts";
 import { generateInstance, itemValue, type InstanceRow } from "./items.ts";
 import { rollRarity } from "./items.ts";
 import { RARITIES, type Rarity } from "./stats.ts";
-import { dropKindOf, weightsFor, withLuck } from "./dropTables.ts";
+import { afterCityFloor, dropKindOf, levelRangeFor, weightsFor, withLuck } from "./dropTables.ts";
 
 export function rollLoot(opts: {
   userId: string;
@@ -11,12 +11,21 @@ export function rollLoot(opts: {
   enemyKind: string;
   luck: number;
   depth?: number;
+  round?: number;
 }) {
-  const defs = db
+  const range = levelRangeFor(opts.depth || 1, afterCityFloor(opts.round || 1));
+  let defs = db
     .prepare(
-      "SELECT id, required_level, rarity_min FROM item_definitions WHERE required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
+      "SELECT id, required_level, rarity_min FROM item_definitions WHERE required_level >= ? AND required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
     )
-    .all(opts.region * 6 + 8) as { id: string; required_level: number; rarity_min: string }[];
+    .all(range.min, range.max) as { id: string; required_level: number; rarity_min: string }[];
+  if (!defs.length) {
+    defs = db
+      .prepare(
+        "SELECT id, required_level, rarity_min FROM item_definitions WHERE required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
+      )
+      .all(range.max) as { id: string; required_level: number; rarity_min: string }[];
+  }
   const rarityWeights = withLuck(weightsFor(opts.depth || 1, dropKindOf(opts.enemyKind)), opts.luck);
   const items: InstanceRow[] = [];
   const used = new Set<string>();

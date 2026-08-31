@@ -141,6 +141,38 @@ try {
 } catch {
   /* already present */
 }
+try {
+  db.exec("ALTER TABLE item_definitions ADD COLUMN base_value INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* already present */
+}
+try {
+  db.exec("ALTER TABLE item_definitions ADD COLUMN value_by_rarity TEXT NOT NULL DEFAULT '{}'");
+} catch {
+  /* already present */
+}
+{
+  const rarities = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"];
+  const rows = db.prepare("SELECT id, base_value, value_by_rarity FROM item_definitions").all() as {
+    id: string;
+    base_value: number;
+    value_by_rarity: string;
+  }[];
+  const upd = db.prepare("UPDATE item_definitions SET value_by_rarity = ? WHERE id = ?");
+  for (const row of rows) {
+    let src: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(row.value_by_rarity || "{}");
+      if (parsed && typeof parsed === "object") src = parsed as Record<string, unknown>;
+    } catch {
+      src = {};
+    }
+    if (rarities.some((r) => Math.max(0, Math.trunc(Number(src[r]))) > 0)) continue;
+    const v = Math.max(0, Math.trunc(Number(row.base_value) || 0));
+    if (v <= 0) continue;
+    upd.run(JSON.stringify(Object.fromEntries(rarities.map((r) => [r, v]))), row.id);
+  }
+}
 
 export function now() {
   return Date.now();

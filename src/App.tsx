@@ -10,7 +10,7 @@ import { ForgeView, putForgeSlot } from "./ForgeView";
 import { AdminView } from "./AdminView";
 import { LootPick } from "./LootPick";
 import { TalentTree, type TalentTreeData } from "./TalentTree";
-import { MarchMap, type MarchView } from "./MarchMap";
+import { MarchMap, canFleeMarch, type MarchView } from "./MarchMap";
 import { fetchStatus, rememberGate, type GateStatus } from "./gate";
 
 const HIT_DELAY_MS = 1000;
@@ -182,9 +182,8 @@ function hallStartStats(h: HallHero) {
     magicDamage: h.magicDamage,
   };
   for (const [k, v] of Object.entries(h.pass || {})) {
-    if (!v) continue;
-    if (k === "healthPct") s.health = Math.round(s.health * (1 + v / 100));
-    else s[k] = (s[k] || 0) + v;
+    if (!v || k === "healthPct") continue;
+    s[k] = (s[k] || 0) + v;
   }
   return s;
 }
@@ -778,8 +777,11 @@ export default function App() {
   const maxHp = c.power.maxHp || c.max_hp;
   const inCity = c.location === "CITY";
   const stats = c.power.stats;
-  const displayHp = Math.min(fight ? livePlayerHp : c.hp, fight?.playerMaxHp ?? maxHp);
-  const xpNeed = 40 + c.level * 25;
+  const displayHp = Math.min(
+    fight && !playbackDone ? livePlayerHp : c.hp,
+    fight && !playbackDone ? fight.playerMaxHp ?? maxHp : maxHp
+  );
+  const xpNeed = Math.max(1, c.level);
   const waitingReplay = !!(fight && !fight.awaiting && !playbackDone);
   const lootOffers = waitingReplay ? [] : game.lootChoices || [];
   const awaiting = !!(fight?.awaiting && !fight.dead);
@@ -814,6 +816,20 @@ export default function App() {
       );
       setFight(packed);
       if (r.dead) setMode("play");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "The road refuses"));
+    }
+  }
+
+  async function fleeFight() {
+    if (!march || !canFleeMarch(march)) return;
+    try {
+      await api("/game/flee", { method: "POST" });
+      playingFight.current = false;
+      setFight(null);
+      setLiveFoes([]);
+      setPlaybackDone(true);
+      await reload();
     } catch (e) {
       setErr(te(e instanceof Error ? e.message : "The road refuses"));
     }
@@ -974,7 +990,7 @@ export default function App() {
 
       {mode === "admin" ? null : (
       <div className="layout">
-        <aside className="panel left-panel" style={{ display: mobile === "equip" || window.innerWidth > 1100 ? "block" : "none" }}>
+        <aside className={`panel left-panel${lootOffers.length ? " loot-peek" : ""}`} style={{ display: mobile === "equip" || window.innerWidth > 1100 ? "block" : "none" }}>
               <div className="section-title">{t("characterLabel")}</div>
               <div className="hero-vitals">
                 <div className="hero-level" title={t("levelReached", { level: c.level })}>
@@ -1260,7 +1276,7 @@ export default function App() {
                 </div>
               </div>
               <div className="city-ruler">
-                {t("cityRuler", { name: game.city?.ownerName || t("none") })}
+                {t("cityRuler", { name: game.city?.ownerName || t("absent") })}
               </div>
               <div className="city-builds-title">{t("cityBuildings")}</div>
               <p className="muted city-builds-hint">{t("cityBuildingsHint")}</p>
@@ -1378,9 +1394,23 @@ export default function App() {
                 <div className="arena-block">
                   {awaiting ? (
                     <div className="start-fight-overlay">
-                      <button className="gold start-fight-btn" onClick={() => void startFight()}>
-                        {t("startFight")}
-                      </button>
+                      <div className="start-fight-actions">
+                        <button className="gold start-fight-btn" onClick={() => void startFight()}>
+                          {t("startFight")}
+                        </button>
+                        {march && !canFleeMarch(march) ? (
+                          <span className="flee-tip-wrap">
+                            <button type="button" className="start-fight-btn flee-locked" disabled>
+                              {t("flee")}
+                            </button>
+                            <span className="flee-only-tip parchment">{t("fleeOnlyPath")}</span>
+                          </span>
+                        ) : (
+                          <button type="button" className="danger start-fight-btn" onClick={() => void fleeFight()}>
+                            {t("flee")}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ) : null}
                   <BattleStage
@@ -1477,6 +1507,7 @@ export default function App() {
         <LootPick
           items={lootOffers}
           charLevel={c.level}
+          log={fight?.log}
           setErr={setErr}
           onDone={async (ore) => {
             await reload();

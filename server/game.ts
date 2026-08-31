@@ -1,9 +1,10 @@
 import { v4 as uuid } from "uuid";
 import { db, now, tx } from "./db.ts";
 import { CONFIG } from "./config.ts";
-import { emptyStats, EQUIP_SLOTS, RARITIES, sanitizeStats, STAT_KEYS, type Stats } from "./engine/stats.ts";
+import { emptyStats, EQUIP_SLOTS, parseStatsByRarity, RARITIES, sanitizeStats, STAT_KEYS, type Rarity, type Stats } from "./engine/stats.ts";
+import { defaultXpConfig, loadXpConfig, saveXpConfig, xpForFight, xpToNext } from "./engine/progress.ts";
 import { loadHeroBase, loadHeroCatalog, publicHeroes, seedHeroes, adminSaveHero as writeHero } from "./engine/heroTables.ts";
-import { generateInstance, hydrate, destroyInstance, itemValue, rerollInstanceFromDefinition, rollRarity, type InstanceRow } from "./engine/items.ts";
+import { generateInstance, hydrate, destroyInstance, itemValue, itemSellGross, loadSellPct, parseValueByRarity, saveSellPct, rerollInstanceFromDefinition, rollRarity, type InstanceRow } from "./engine/items.ts";
 import {
   buildGrid,
   canPlace,
@@ -36,6 +37,7 @@ import {
 import { loadEnemyCatalog, localesForEnemy, saveEnemyI18n } from "./engine/enemyCatalog.ts";
 import { applyTalentPick, canPickTalent, ensureTalentTree, freshTalentTree } from "./engine/talents.ts";
 import {
+  canFlee,
   combatKind,
   generateMarch,
   parseMarch,
@@ -47,7 +49,7 @@ import {
   type ResolvedKind,
 } from "./engine/march.ts";
 import { addCityTax, ensureCity, hubDepthOf, publicCity, unlockedCityMax } from "./engine/city.ts";
-import { defaultShopConfig, loadShopConfig, saveShopConfig, shopRestockMs, shopWeightsFor } from "./engine/shopTables.ts";
+import { defaultShopConfig, loadShopConfig, saveShopConfig, shopLevelRangeFor, shopRestockMs, shopWeightsFor } from "./engine/shopTables.ts";
 
 export function publicItem(inst: InstanceRow) {
   return hydrate(inst);
@@ -80,7 +82,10 @@ export function requireAlive(userId: string, characterId?: string) {
 
 function syncVitals(character: { id: unknown; class: unknown; level: unknown; hp?: unknown; max_hp?: unknown }) {
   const power = characterPower({ id: String(character.id), class: String(character.class), level: Number(character.level) });
-  const hp = Math.min(Number(character.hp ?? power.maxHp), power.maxHp);
+  const oldMax = Number(character.max_hp ?? 0);
+  const oldHp = Number(character.hp ?? power.maxHp);
+  const wasFull = !oldMax || oldHp >= oldMax;
+  const hp = wasFull ? power.maxHp : Math.min(oldHp, power.maxHp);
   db.prepare("UPDATE characters SET max_hp=?, hp=? WHERE id=?").run(power.maxHp, hp, character.id);
   return { power, hp };
 }
@@ -159,18 +164,19 @@ export function createCharacter(userId: string, name: string, cls: string) {
   const taken = db.prepare("SELECT id FROM characters WHERE name = ? COLLATE NOCASE AND status = 'ALIVE'").get(name);
   if (taken) return { error: "That name is already carved." };
   const id = uuid();
-  const hp = base.health;
   const march = generateMarch(1);
   db.prepare(
     `INSERT INTO characters (id,user_id,name,class,level,xp,region,round,hp,max_hp,status,location,created_at)
      VALUES (?,?,?,?,1,0,1,1,?,?, 'ALIVE','WILD',?)`
-  ).run(id, userId, name.trim(), cls, hp, hp, now());
+  ).run(id, userId, name.trim(), cls, base.health, base.health, now());
   db.prepare("UPDATE characters SET talent_tree = ?, talent_points = 0, depth = 1, map_state = ? WHERE id = ?").run(
     JSON.stringify(freshTalentTree()),
     JSON.stringify(march),
     id
   );
   grantHeroStarters(userId, id, cls);
+  const power = characterPower({ id, class: cls, level: 1 });
+  db.prepare("UPDATE characters SET hp=?, max_hp=? WHERE id=?").run(power.maxHp, power.maxHp, id);
   return { error: null, id };
 }
 
@@ -240,24 +246,8 @@ function pickEnemy(regionId: number, kind: "normal" | "elite" | "boss") {
   return db.prepare("SELECT * FROM enemies WHERE id = ?").get(id);
 }
 
-function ensureSideCity(state: MarchState) {
-  const cities = state.nodes.filter((n) => n.kind === "city");
-  if (cities.length >= 2) return false;
-  const pool = state.nodes.filter(
-    (n) =>
-      n.floor !== 1 &&
-      n.floor !== 5 &&
-      n.floor !== 10 &&
-      n.kind !== "city" &&
-      n.kind !== "boss" &&
-      n.kind !== "mine" &&
-      !state.visited.includes(n.id) &&
-      n.id !== state.current &&
-      n.id !== state.pending
-  );
-  if (!pool.length) return false;
-  pool[Math.floor(Math.random() * pool.length)]!.kind = "city";
-  return true;
+function ensureSideCity(_state: MarchState) {
+  return false;
 }
 
 function saveMarch(characterId: unknown, state: MarchState) {
@@ -273,7 +263,7 @@ function ensureMarch(character: Record<string, unknown>): MarchState {
       if (city) {
         state.current = city.id;
         state.visited = [city.id];
-        db.prepare("UPDATE characters SET round = 5 WHERE id = ?").run(character.id);
+        db.prepare("UPDATE characters SET round = ? WHERE id = ?").run(city.floor, character.id);
       }
     }
     saveMarch(character.id, state);
@@ -282,9 +272,12 @@ function ensureMarch(character: Record<string, unknown>): MarchState {
     saveMarch(character.id, state);
     character.map_state = JSON.stringify(state);
   }
+  if (!Array.isArray(state.fled)) state.fled = [];
+  if (!Array.isArray(state.fledEdges)) state.fledEdges = [];
   if (!state.nodes.some((n) => n.kind === "mine")) {
     placeMines(state.nodes, Math.max(1, Number(character.depth || 1)), [
       ...state.visited,
+      ...state.fled,
       state.current || "",
       state.pending || "",
     ]);
@@ -467,6 +460,7 @@ function grantLoot(userId: string, character: Record<string, unknown>, power: { 
     enemyKind,
     luck: power.stats.luck,
     depth: Number(character.depth || 1),
+    round: Number(character.round || 1),
   });
   db.prepare("UPDATE characters SET loot_pending=? WHERE id=?").run(
     JSON.stringify(loot.items.map((it) => it.id)),
@@ -507,22 +501,24 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
       enemyKind: enemy.kind,
       luck: power.stats.luck,
       depth: Number(character.depth || 1),
+      round: Number(character.round || 1),
     });
-    const xpGain = 12 + Number(character.region) * 4 + (enemy.kind === "boss" ? 40 : enemy.kind === "elite" ? 18 : 0);
+    const xpGain = xpForFight(Number(character.depth || 1), enemy.kind);
     let level = Number(character.level);
     let xp = Number(character.xp) + xpGain;
-    let needed = 40 + level * 25;
+    let needed = xpToNext(level);
     while (xp >= needed) {
       xp -= needed;
       level++;
-      needed = 40 + level * 25;
+      needed = xpToNext(level);
     }
     const newMax = characterPower({ id: String(character.id), class: String(character.class), level }).maxHp;
     const talentGain = enemy.kind === "boss" ? 1 : 0;
+    const afterHp = enemy.kind === "boss" ? newMax : Math.min(newMax, result.playerHp);
     db.prepare(
       `UPDATE characters SET hp=?, max_hp=?, level=?, xp=?, enemies_defeated = enemies_defeated + 1, loot_pending=?, talent_points = COALESCE(talent_points, 0) + ? WHERE id=?`
     ).run(
-      Math.min(newMax, result.playerHp),
+      afterHp,
       newMax,
       level,
       xp,
@@ -584,6 +580,30 @@ export function startCombat(userId: string) {
     const fight = runCombat(userId, character, pf.kind === "mine" ? "normal" : pf.kind, pack);
     if (fight.error) return fight;
     return { error: null, action: "fight" as const, ...(fight.result ?? {}) };
+  });
+}
+
+export function fleeCombat(userId: string) {
+  return tx(() => {
+    const { error, character } = requireAlive(userId);
+    if (error || !character) return { error: error || "No character" };
+    if (character.location === "CITY") return { error: "Leave the city first." };
+    if (parseIdList(character.loot_pending).length) return { error: "Choose your spoils first." };
+    const state = ensureMarch(character);
+    if (!state.pending || !state.pendingFight) return { error: "There is no fight to flee." };
+    if (!canFlee(state)) return { error: "This is the only path. You cannot flee." };
+    if (!state.fled.includes(state.pending)) state.fled.push(state.pending);
+    if (state.current && !state.fledEdges.some((e) => e.from === state.current && e.to === state.pending)) {
+      state.fledEdges.push({ from: state.current, to: state.pending });
+    }
+    state.pending = null;
+    state.pendingFight = null;
+    saveMarch(character.id, state);
+    const here = state.current ? state.nodes.find((n) => n.id === state.current) : null;
+    db.prepare("UPDATE characters SET round = ? WHERE id = ?").run(here?.floor ?? 1, character.id);
+    character.map_state = JSON.stringify(state);
+    character.round = here?.floor ?? 1;
+    return { error: null, action: "fled" as const };
   });
 }
 
@@ -1005,9 +1025,19 @@ function fillCityShop(depth: number, ownerUserId: string) {
   for (const o of old) destroyInstance(o.instance_id);
   db.prepare("DELETE FROM city_shop_items WHERE city_depth=?").run(depth);
   const slots = Math.min(CONFIG.SHOP_MAX_ITEMS, CONFIG.SHOP_START_ITEMS + city.shop_level - 1);
-  const defs = db
-    .prepare("SELECT id, rarity_min FROM item_definitions WHERE slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'")
-    .all() as { id: string; rarity_min: string }[];
+  const range = shopLevelRangeFor(depth);
+  let defs = db
+    .prepare(
+      "SELECT id, rarity_min, required_level FROM item_definitions WHERE required_level >= ? AND required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
+    )
+    .all(range.min, range.max) as { id: string; rarity_min: string; required_level: number }[];
+  if (!defs.length) {
+    defs = db
+      .prepare(
+        "SELECT id, rarity_min, required_level FROM item_definitions WHERE required_level <= ? AND slot IS NOT NULL AND slot != '' AND IFNULL(category,'') != 'ore'"
+      )
+      .all(range.max) as { id: string; rarity_min: string; required_level: number }[];
+  }
   const weights = shopWeightsFor(depth);
   const minIdxOf = (min: string) => {
     const i = RARITIES.indexOf(min as (typeof RARITIES)[number]);
@@ -1027,7 +1057,7 @@ function fillCityShop(depth: number, ownerUserId: string) {
       region: depth,
       forceRarity: rarity,
     });
-    const price = Math.round(itemValue(inst) * 2.4);
+    const price = itemValue(inst);
     db.prepare("INSERT INTO city_shop_items (id,city_depth,instance_id,price,slot,generated_at) VALUES (?,?,?,?,?,?)").run(
       uuid(),
       depth,
@@ -1172,7 +1202,7 @@ export function sellItem(userId: string, instanceId: string) {
     if (inst.location === "STORAGE" && character.location !== "CITY") return { error: "The vault opens only within the city walls." };
     const depth = hubDepthOf(character);
     const city = ensureCity(depth);
-    const gross = itemValue(inst);
+    const gross = itemSellGross(inst);
     const taxPct = Math.max(0, Math.min(100, Number(city.tax_percent) || 0));
     const tax = Math.floor((gross * taxPct) / 100);
     const price = gross - tax;
@@ -1592,6 +1622,22 @@ export function adminResetShopTables() {
   return cfg;
 }
 
+export function adminXp() {
+  return loadXpConfig();
+}
+
+export function adminSaveXp(raw: unknown) {
+  const cfg = saveXpConfig(raw);
+  logGame("ADMIN", "kill experience saved");
+  return cfg;
+}
+
+export function adminResetXp() {
+  const cfg = saveXpConfig(defaultXpConfig());
+  logGame("ADMIN", "kill experience reset");
+  return cfg;
+}
+
 export function adminPackTables() {
   return loadPackConfig();
 }
@@ -1674,16 +1720,29 @@ export function adminSets() {
   return db.prepare("SELECT id, name FROM item_sets ORDER BY name COLLATE NOCASE").all() as { id: string; name: string }[];
 }
 
+export function adminSellPct() {
+  return { pct: loadSellPct() };
+}
+
+export function adminSaveSellPct(raw: unknown) {
+  const pct = saveSellPct(raw);
+  logGame("ADMIN", `sell percent ${pct}`);
+  return { pct };
+}
+
 export function adminItemDefs() {
   const rows = db
     .prepare(
-      `SELECT id, name, category, slot, rarity_min, required_level, set_id, glyph, flavor, tags, base_stats, icon
+      `SELECT id, name, category, slot, rarity_min, required_level, set_id, glyph, flavor, tags, base_stats, icon, base_value, value_by_rarity
        FROM item_definitions ORDER BY required_level, name COLLATE NOCASE`
     )
     .all() as Record<string, unknown>[];
   return rows.map((row) => {
     const tags = JSON.parse(String(row.tags || "[]")) as string[];
     const school = tags.includes("chain") ? "chain" : tags.includes("fire") ? "fire" : tags.includes("frost") ? "frost" : "";
+    const valueByRarity = parseValueByRarity(row.value_by_rarity);
+    const legacyValue = Math.max(0, Math.trunc(Number(row.base_value) || 0));
+    const anyPriced = RARITIES.some((r) => (valueByRarity[r] || 0) > 0);
     return {
       id: String(row.id),
       slot: row.slot ? String(row.slot) : null,
@@ -1693,7 +1752,26 @@ export function adminItemDefs() {
       icon: String(row.icon || ""),
       twohand: tags.includes("twohand"),
       school,
-      base_stats: sanitizeStats(JSON.parse(String(row.base_stats || "{}")) as Stats),
+      value_by_rarity: anyPriced
+        ? valueByRarity
+        : (Object.fromEntries(RARITIES.map((r) => [r, legacyValue])) as Record<Rarity, number>),
+      base_stats: sanitizeStats(
+        (parseStatsByRarity(row.base_stats)?.Common || JSON.parse(String(row.base_stats || "{}"))) as Stats
+      ),
+      stats_by_rarity: Object.fromEntries(
+        RARITIES.map((r) => [
+          r,
+          parseStatsByRarity(row.base_stats)?.[r] ||
+            sanitizeStats((() => {
+              try {
+                const raw = JSON.parse(String(row.base_stats || "{}"));
+                return raw && typeof raw === "object" && !raw.Common ? raw : {};
+              } catch {
+                return {};
+              }
+            })() as Stats),
+        ])
+      ) as Record<Rarity, Stats>,
       i18n: localesFor(String(row.id)),
     };
   });
@@ -1739,7 +1817,7 @@ export function adminSaveItemDef(raw: Record<string, unknown>) {
     : "Common";
   const req = Math.max(1, Math.trunc(Number(raw.required_level) || 1));
   const prev = db.prepare("SELECT * FROM item_definitions WHERE id=?").get(id) as
-    | { category: string; glyph: string; tags: string; sell_mult: number; set_id: string | null }
+    | { category: string; glyph: string; tags: string; sell_mult: number; set_id: string | null; base_value: number; value_by_rarity: string }
     | undefined;
   const category = inferCategory(slot, prev?.category);
   const flavor = String(flavors.en || flavors.ru || flavors.zh || "").slice(0, 240);
@@ -1753,21 +1831,41 @@ export function adminSaveItemDef(raw: Record<string, unknown>) {
   if (raw.twohand) keep.push("twohand");
   const glyph = prev?.glyph || defaultGlyph(slot);
   const icon = normalizeIcon(raw.icon);
-  const stats: Stats = {};
+  const byRarity = (raw.stats_by_rarity && typeof raw.stats_by_rarity === "object" ? raw.stats_by_rarity : null) as
+    | Partial<Record<Rarity, Record<string, number>>>
+    | null;
   const incoming = raw.base_stats && typeof raw.base_stats === "object" ? (raw.base_stats as Record<string, number>) : {};
-  for (const k of STAT_KEYS) {
-    const n = Number(incoming[k]);
-    if (Number.isFinite(n) && n) stats[k] = n;
+  const rarityStats: Partial<Record<Rarity, Stats>> = {};
+  if (byRarity) {
+    for (const r of RARITIES) {
+      const row = byRarity[r] && typeof byRarity[r] === "object" ? byRarity[r]! : {};
+      const stats: Stats = {};
+      for (const k of STAT_KEYS) {
+        const n = Number(row[k]);
+        if (Number.isFinite(n) && n) stats[k] = n;
+      }
+      rarityStats[r] = sanitizeStats(stats);
+    }
+  } else {
+    const stats: Stats = {};
+    for (const k of STAT_KEYS) {
+      const n = Number(incoming[k]);
+      if (Number.isFinite(n) && n) stats[k] = n;
+    }
+    rarityStats.Common = sanitizeStats(stats);
   }
-  const clean = sanitizeStats(stats);
+  const clean = rarityStats.Common || {};
+  const stored = JSON.stringify(byRarity ? rarityStats : clean);
+  const valueByRarity = parseValueByRarity(raw.value_by_rarity);
+  const baseValue = valueByRarity.Common || RARITIES.reduce((n, r) => n || valueByRarity[r], 0);
   db.prepare(
-    `INSERT INTO item_definitions (id,name,category,slot,rarity_min,base_level,required_level,width,height,stackable,max_stack,base_stats,affix_pool,set_id,glyph,flavor,tags,sell_mult,icon)
-     VALUES (?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO item_definitions (id,name,category,slot,rarity_min,base_level,required_level,width,height,stackable,max_stack,base_stats,affix_pool,set_id,glyph,flavor,tags,sell_mult,icon,base_value,value_by_rarity)
+     VALUES (?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        name=excluded.name, category=excluded.category, slot=excluded.slot, rarity_min=excluded.rarity_min,
        base_level=excluded.base_level, required_level=excluded.required_level, width=1, height=1,
        base_stats=excluded.base_stats, set_id=excluded.set_id, flavor=excluded.flavor,
-       tags=excluded.tags, icon=excluded.icon`
+       tags=excluded.tags, icon=excluded.icon, base_value=excluded.base_value, value_by_rarity=excluded.value_by_rarity`
   ).run(
     id,
     name,
@@ -1778,14 +1876,16 @@ export function adminSaveItemDef(raw: Record<string, unknown>) {
     req,
     0,
     1,
-    JSON.stringify(clean),
+    stored,
     JSON.stringify([]),
     setId,
     glyph,
     flavor,
     JSON.stringify(keep),
     prev?.sell_mult ?? 1,
-    icon
+    icon,
+    baseValue,
+    JSON.stringify(valueByRarity)
   );
   saveItemI18n(id, names, flavors);
   const inst = db.prepare("SELECT * FROM item_instances WHERE definition_id = ? AND location != 'DESTROYED'").all(id) as InstanceRow[];

@@ -4,8 +4,17 @@ import { RARITIES, RARITY_WEIGHTS, type Rarity } from "./stats.ts";
 export const DROP_KINDS = ["normal", "elite", "boss"] as const;
 export type DropKind = (typeof DROP_KINDS)[number];
 export type RarityWeights = Record<Rarity, number>;
-export type DropBand = { minDepth: number; tables: Record<DropKind, RarityWeights> };
+export type LevelRange = { min: number; max: number };
+export type DropBand = {
+  minDepth: number;
+  tables: Record<DropKind, RarityWeights>;
+  beforeCity: LevelRange;
+  afterCity: LevelRange;
+};
 export type DropConfig = { bands: DropBand[] };
+
+/** Centered city on floor 5. Floors 1–4 are before, 6–10 after. */
+export const CITY_FLOOR = 5;
 
 const KEY = "loot_rarity";
 
@@ -21,7 +30,25 @@ function cloneWeights(src: Partial<RarityWeights> | undefined, luck = 0): Rarity
   return out;
 }
 
+export function defaultLevelRanges(minDepth: number): { beforeCity: LevelRange; afterCity: LevelRange } {
+  const d = Math.max(1, Math.trunc(Number(minDepth) || 1));
+  return {
+    beforeCity: { min: d, max: d + 2 },
+    afterCity: { min: d + 1, max: d + 4 },
+  };
+}
+
+function clampRange(raw: Partial<LevelRange> | undefined, fallback: LevelRange): LevelRange {
+  let min = Math.max(1, Math.trunc(Number(raw?.min)));
+  let max = Math.max(1, Math.trunc(Number(raw?.max)));
+  if (!Number.isFinite(min)) min = fallback.min;
+  if (!Number.isFinite(max)) max = fallback.max;
+  if (max < min) max = min;
+  return { min, max };
+}
+
 export function defaultDropConfig(): DropConfig {
+  const levels = defaultLevelRanges(1);
   return {
     bands: [
       {
@@ -31,6 +58,8 @@ export function defaultDropConfig(): DropConfig {
           elite: cloneWeights(RARITY_WEIGHTS, 10),
           boss: cloneWeights(RARITY_WEIGHTS, 25),
         },
+        beforeCity: levels.beforeCity,
+        afterCity: levels.afterCity,
       },
     ],
   };
@@ -54,7 +83,13 @@ export function normalizeDropConfig(raw: unknown): DropConfig {
       tables[kind] = cloneWeights(b?.tables?.[kind], 0);
       if (!Object.values(tables[kind]).some((v) => v > 0)) tables[kind] = emptyWeights();
     }
-    bands.push({ minDepth, tables });
+    const fallback = defaultLevelRanges(minDepth);
+    bands.push({
+      minDepth,
+      tables,
+      beforeCity: clampRange(b?.beforeCity, fallback.beforeCity),
+      afterCity: clampRange(b?.afterCity, fallback.afterCity),
+    });
   }
   if (!bands.length) return fallback;
   bands.sort((a, c) => a.minDepth - c.minDepth);
@@ -86,14 +121,27 @@ export function dropKindOf(enemyKind: string): DropKind {
   return "normal";
 }
 
-export function weightsFor(depth: number, kind: DropKind, cfg = loadDropConfig()): RarityWeights {
+export function bandFor(depth: number, cfg = loadDropConfig()): DropBand {
   const d = Math.max(1, Math.trunc(Number(depth) || 1));
   let pick = cfg.bands[0]!;
   for (const b of cfg.bands) {
     if (b.minDepth <= d) pick = b;
     else break;
   }
-  return pick.tables[kind];
+  return pick;
+}
+
+export function weightsFor(depth: number, kind: DropKind, cfg = loadDropConfig()): RarityWeights {
+  return bandFor(depth, cfg).tables[kind];
+}
+
+export function afterCityFloor(round: number) {
+  return Math.max(1, Math.trunc(Number(round) || 1)) > CITY_FLOOR;
+}
+
+export function levelRangeFor(depth: number, afterCity: boolean, cfg = loadDropConfig()): LevelRange {
+  const band = bandFor(depth, cfg);
+  return afterCity ? band.afterCity : band.beforeCity;
 }
 
 export function chancePercents(weights: RarityWeights): Record<Rarity, number> {

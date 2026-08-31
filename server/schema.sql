@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS item_definitions (
   glyph TEXT NOT NULL,
   flavor TEXT NOT NULL,
   tags TEXT NOT NULL DEFAULT '[]',
-  sell_mult REAL NOT NULL DEFAULT 1
+  sell_mult REAL NOT NULL DEFAULT 1,
+  base_value INTEGER NOT NULL DEFAULT 0,
+  value_by_rarity TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS item_instances (

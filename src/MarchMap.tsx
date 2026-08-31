@@ -15,8 +15,19 @@ export type MarchView = {
   current: string | null;
   pending: string | null;
   visited: string[];
+  fled?: string[];
+  fledEdges?: { from: string; to: string }[];
   reachable: string[];
 };
+
+export function canFleeMarch(march: MarchView): boolean {
+  const blocked = new Set([...(march.visited || []), ...(march.fled || [])]);
+  if (!march.current) {
+    return march.nodes.filter((n) => n.floor === 1 && !blocked.has(n.id)).length > 1;
+  }
+  const cur = march.nodes.find((n) => n.id === march.current);
+  return (cur?.next.filter((id) => !blocked.has(id)).length ?? 0) > 1;
+}
 
 const W = 360;
 const H = 740;
@@ -140,6 +151,8 @@ export function MarchMap({
               if (!b) return null;
               const a = pos(n);
               const p = pos(b);
+              const fled = (march.fledEdges || []).some((e) => e.from === n.id && e.to === nid);
+              const walked = !fled && march.visited.includes(n.id) && march.visited.includes(nid);
               return (
                 <line
                   key={`${n.id}-${nid}`}
@@ -147,7 +160,7 @@ export function MarchMap({
                   y1={a.y}
                   x2={p.x}
                   y2={p.y}
-                  className="map-path"
+                  className={`map-path${walked ? " walked" : ""}${fled ? " fled" : ""}`}
                 />
               );
             })
@@ -157,11 +170,12 @@ export function MarchMap({
             const reach = march.reachable.includes(n.id);
             const here = march.current === n.id || march.pending === n.id;
             const seen = march.visited.includes(n.id);
+            const ran = (march.fled || []).includes(n.id);
             return (
               <g
                 key={n.id}
                 transform={`translate(${p.x}, ${p.y})`}
-                className={`map-node k-${n.kind} ${reach ? "reach" : ""} ${here ? "here" : ""} ${seen ? "seen" : ""}`}
+                className={`map-node k-${n.kind} ${reach ? "reach" : ""} ${here ? "here" : ""} ${seen ? "seen" : ""} ${ran ? "fled" : ""}`}
                 onClick={() => {
                   if (panned.current) return;
                   if (interactive && reach) onPick(n.id);
@@ -178,6 +192,17 @@ export function MarchMap({
                 <circle r={here ? 22 : 18} className="map-ring" />
                 <circle r={16} className="map-disk" />
                 <NodeIcon kind={n.kind} />
+                {ran ? (
+                  <g className="map-cross" pointerEvents="none">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M8.2 8.2 L13.8 13.8 M13.8 8.2 L8.2 13.8" />
+                  </g>
+                ) : seen ? (
+                  <g className="map-check" pointerEvents="none">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M7.5 11.2 L10 13.6 L15.2 8" />
+                  </g>
+                ) : null}
               </g>
             );
           })}

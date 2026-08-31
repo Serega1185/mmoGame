@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db } from "../db.ts";
 import { ITEMS } from "../../src/i18n/lore.ts";
+import { ITEM_LOCALES } from "../seed/itemBand.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..", "..");
@@ -44,7 +45,7 @@ export function seedItemI18n() {
     flavor: string;
   }[];
   for (const d of defs) {
-    const pack = ITEMS[d.id];
+    const pack = ITEM_LOCALES[d.id] || ITEMS[d.id];
     for (const lang of LANGS) {
       const pair = pack?.[lang];
       ins.run(d.id, lang, pair?.[0] || d.name, pair?.[1] || d.flavor || "");

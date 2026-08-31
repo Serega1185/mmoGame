@@ -151,11 +151,9 @@ export function ForgeView({
         <p className="forge-status">
           {maxed
             ? t("forgeMax")
-            : same && !hasOre
-              ? t("forgeNeedOre", { ore: t(`ore_${sample!.rarity}`) })
-              : same
-                ? t("forgePay", { n: cost || 0, rarity: t(`rarity_${sample!.rarity}`) })
-                : t("forgeHint")}
+            : sample
+              ? `${t("forgeNeedOre", { ore: t(`ore_${sample.rarity}`) })} ${t("forgePay", { n: cost || 0, rarity: t(`rarity_${sample.rarity}`) })}`
+              : t("forgeHint")}
         </p>
       </div>
       {hover ? <ItemTooltip item={hover.item} x={hover.x} y={hover.y} charLevel={charLevel} /> : null}

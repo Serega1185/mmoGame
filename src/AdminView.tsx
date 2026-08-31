@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, STAT_KEYS } from "./api";
 import { useI18n } from "./i18n";
-import { HeroFace, HoverHint } from "./ui";
+import type { Item } from "./api";
+import { HeroFace, HoverHint, ItemFace, ItemTooltip } from "./ui";
 
 const RARITIES = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"] as const;
 const DROP_KINDS = ["normal", "elite", "boss"] as const;
@@ -9,8 +10,19 @@ const DROP_KINDS = ["normal", "elite", "boss"] as const;
 type Rarity = (typeof RARITIES)[number];
 type DropKind = (typeof DROP_KINDS)[number];
 type RarityWeights = Record<Rarity, number>;
-type DropBand = { minDepth: number; tables: Record<DropKind, RarityWeights> };
+type LevelRange = { min: number; max: number };
+type DropBand = {
+  minDepth: number;
+  tables: Record<DropKind, RarityWeights>;
+  beforeCity: LevelRange;
+  afterCity: LevelRange;
+};
 type DropConfig = { bands: DropBand[] };
+
+function defaultLevelRanges(minDepth: number): { beforeCity: LevelRange; afterCity: LevelRange } {
+  const d = Math.max(1, Math.trunc(Number(minDepth) || 1));
+  return { beforeCity: { min: d, max: d + 2 }, afterCity: { min: d + 1, max: d + 4 } };
+}
 
 type AccountRow = {
   user_id: string;
@@ -161,6 +173,72 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
               </button>
             ) : null}
           </div>
+          <div className="admin-drop-levels">
+            <label>
+              {t("adminDropsBeforeCity")}
+              <input
+                type="number"
+                min={1}
+                value={band.beforeCity?.min ?? 1}
+                onChange={(e) =>
+                  patchBand(i, {
+                    ...band,
+                    beforeCity: {
+                      min: Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                      max: band.beforeCity?.max ?? 1,
+                    },
+                  })
+                }
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={1}
+                value={band.beforeCity?.max ?? 1}
+                onChange={(e) =>
+                  patchBand(i, {
+                    ...band,
+                    beforeCity: {
+                      min: band.beforeCity?.min ?? 1,
+                      max: Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              {t("adminDropsAfterCity")}
+              <input
+                type="number"
+                min={1}
+                value={band.afterCity?.min ?? 1}
+                onChange={(e) =>
+                  patchBand(i, {
+                    ...band,
+                    afterCity: {
+                      min: Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                      max: band.afterCity?.max ?? 1,
+                    },
+                  })
+                }
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={1}
+                value={band.afterCity?.max ?? 1}
+                onChange={(e) =>
+                  patchBand(i, {
+                    ...band,
+                    afterCity: {
+                      min: band.afterCity?.min ?? 1,
+                      max: Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
           <table className="admin-drop-table">
             <thead>
               <tr>
@@ -207,16 +285,20 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
           disabled={busy}
           onClick={() => {
             const last = cfg.bands[cfg.bands.length - 1]!;
+            const minDepth = last.minDepth + 5;
+            const levels = defaultLevelRanges(minDepth);
             setCfg({
               bands: [
                 ...cfg.bands,
                 {
-                  minDepth: last.minDepth + 5,
+                  minDepth,
                   tables: {
                     normal: { ...last.tables.normal },
                     elite: { ...last.tables.elite },
                     boss: { ...last.tables.boss },
                   },
+                  beforeCity: levels.beforeCity,
+                  afterCity: levels.afterCity,
                 },
               ],
             });
@@ -236,8 +318,13 @@ function DropsPanel({ setErr }: { setErr: (s: string) => void }) {
   );
 }
 
-type ShopBand = { minDepth: number; weights: RarityWeights };
+type ShopBand = { minDepth: number; weights: RarityWeights; itemMin: number; itemMax: number };
 type ShopConfig = { bands: ShopBand[]; restockMinutes: number };
+
+function defaultShopLevels(minDepth: number) {
+  const d = Math.max(1, Math.trunc(Number(minDepth) || 1));
+  return { itemMin: d, itemMax: d + 5 };
+}
 
 function ShopRarityPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te } = useI18n();
@@ -258,7 +345,7 @@ function ShopRarityPanel({ setErr }: { setErr: (s: string) => void }) {
     if (!cfg) return;
     const bands = cfg.bands.slice();
     bands[i] = next;
-    setCfg({ bands });
+    setCfg({ ...cfg, bands });
     setNote("");
   }
 
@@ -337,11 +424,33 @@ function ShopRarityPanel({ setErr }: { setErr: (s: string) => void }) {
               <button
                 className="danger"
                 disabled={busy}
-                onClick={() => setCfg({ bands: cfg.bands.filter((_, j) => j !== i) })}
+                onClick={() => setCfg({ ...cfg, bands: cfg.bands.filter((_, j) => j !== i) })}
               >
                 {t("adminDropsRemoveBand")}
               </button>
             ) : null}
+          </div>
+          <div className="admin-drop-levels">
+            <label>
+              {t("adminShopItemLevels")}
+              <input
+                type="number"
+                min={1}
+                value={band.itemMin ?? 1}
+                onChange={(e) =>
+                  patchBand(i, { ...band, itemMin: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })
+                }
+              />
+              <span className="muted">{t("adminDropsLevelTo")}</span>
+              <input
+                type="number"
+                min={1}
+                value={band.itemMax ?? 1}
+                onChange={(e) =>
+                  patchBand(i, { ...band, itemMax: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })
+                }
+              />
+            </label>
           </div>
           <table className="admin-drop-table">
             <thead>
@@ -376,12 +485,17 @@ function ShopRarityPanel({ setErr }: { setErr: (s: string) => void }) {
           disabled={busy}
           onClick={() => {
             const last = cfg.bands[cfg.bands.length - 1]!;
+            const minDepth = last.minDepth + 1;
+            const levels = defaultShopLevels(minDepth);
             setCfg({
+              ...cfg,
               bands: [
                 ...cfg.bands,
                 {
-                  minDepth: last.minDepth + 1,
+                  minDepth,
                   weights: { ...last.weights },
+                  itemMin: levels.itemMin,
+                  itemMax: levels.itemMax,
                 },
               ],
             });
@@ -700,11 +814,16 @@ type AdminItem = {
   icon: string;
   twohand: boolean;
   school: string;
+  value_by_rarity: Record<string, number>;
   base_stats: Record<string, number>;
+  stats_by_rarity?: Record<string, Record<string, number>>;
   i18n: Record<"en" | "ru" | "zh", ItemLocale>;
 };
 
 const EMPTY_LOCALE: ItemLocale = { name: "", flavor: "" };
+const EMPTY_RARITY_STATS = (): Record<string, Record<string, number>> =>
+  Object.fromEntries(RARITIES.map((r) => [r, {}]));
+const EMPTY_RARITY_VALUES = (): Record<string, number> => Object.fromEntries(RARITIES.map((r) => [r, 0]));
 const EMPTY_ITEM: AdminItem = {
   id: "",
   slot: "Weapon",
@@ -714,9 +833,62 @@ const EMPTY_ITEM: AdminItem = {
   icon: "",
   twohand: false,
   school: "",
+  value_by_rarity: EMPTY_RARITY_VALUES(),
   base_stats: {},
+  stats_by_rarity: EMPTY_RARITY_STATS(),
   i18n: { en: { ...EMPTY_LOCALE }, ru: { ...EMPTY_LOCALE }, zh: { ...EMPTY_LOCALE } },
 };
+
+const SLOT_GLYPH: Record<string, string> = {
+  Head: "helm",
+  Chest: "chest",
+  Gloves: "gloves",
+  Legs: "legs",
+  Boots: "boots",
+  Weapon: "sword",
+  Offhand: "shield",
+  Neck: "neck",
+  Ring1: "ring",
+  Ring2: "ring",
+};
+
+function previewItem(it: AdminItem, rarity: string, sellPct = 100): Item {
+  const stats = it.stats_by_rarity?.[rarity] || it.base_stats || {};
+  const sum = Object.values(stats).reduce((a, b) => a + Math.abs(Number(b) || 0), 0);
+  const auto = Math.max(4, Math.round(sum * 2.2));
+  const priced = Math.max(0, Math.trunc(Number(it.value_by_rarity?.[rarity]) || 0));
+  const shop = priced > 0 ? priced : auto;
+  const value = Math.max(0, Math.round((shop * sellPct) / 100));
+  return {
+    id: it.id,
+    definition_id: it.id,
+    rarity,
+    item_level: 1,
+    required_level: it.required_level,
+    stats,
+    affixes: [],
+    width: 1,
+    height: 1,
+    rotated: 0,
+    stack: 1,
+    grid_x: 0,
+    grid_y: 0,
+    equip_slot: it.slot,
+    location: "INVENTORY",
+    value,
+    definition: {
+      name: it.i18n.en.name || it.id,
+      category: it.slot === "Weapon" ? "weapon" : "armor",
+      slot: it.slot,
+      glyph: SLOT_GLYPH[it.slot || ""] || "stone",
+      flavor: it.i18n.en.flavor || "",
+      set_id: it.set_id,
+      tags: it.school ? ["magic", it.school] : [],
+      icon: it.icon,
+    },
+    set: it.set_id ? { id: it.set_id, name: it.set_id } : null,
+  };
+}
 
 function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te, itemName, reloadCatalog } = useI18n();
@@ -726,15 +898,22 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"level" | "name">("level");
   const [edit, setEdit] = useState<AdminItem | null>(null);
+  const [rarityTab, setRarityTab] = useState<(typeof RARITIES)[number]>("Common");
+  const [hover, setHover] = useState<{ item: Item; x: number; y: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [sellPct, setSellPct] = useState(100);
+  const [sellNote, setSellNote] = useState("");
   const [idLocked, setIdLocked] = useState(false);
 
   const load = useCallback(async () => {
-    const data = await api<{ items: AdminItem[]; sets: { id: string; name: string }[]; icons: string[] }>("/admin/items");
+    const data = await api<{ items: AdminItem[]; sets: { id: string; name: string }[]; icons: string[]; sell_pct?: number }>(
+      "/admin/items"
+    );
     setItems(data.items);
     setSets(data.sets || []);
     setIcons(data.icons || []);
+    if (data.sell_pct != null) setSellPct(data.sell_pct);
   }, []);
 
   useEffect(() => {
@@ -773,7 +952,9 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
           icon: edit.icon,
           school: edit.school,
           twohand: edit.twohand,
-          base_stats: edit.base_stats,
+          value_by_rarity: edit.value_by_rarity || EMPTY_RARITY_VALUES(),
+          base_stats: edit.stats_by_rarity?.Common || edit.base_stats,
+          stats_by_rarity: edit.stats_by_rarity || EMPTY_RARITY_STATS(),
           names: { en: edit.i18n.en.name, ru: edit.i18n.ru.name, zh: edit.i18n.zh.name },
           flavors: { en: edit.i18n.en.flavor, ru: edit.i18n.ru.flavor, zh: edit.i18n.zh.flavor },
         },
@@ -818,9 +999,49 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
     setIcons((prev) => (prev.includes(saved.path) ? prev : [saved.path, ...prev]));
   }
 
+  async function saveSellPct() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const saved = await api<{ pct: number }>("/admin/sell-pct", { method: "POST", body: { pct: sellPct } });
+      setSellPct(saved.pct);
+      setSellNote(t("adminItemsSellPctSaved"));
+      setErr("");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="admin-drops" style={{ maxWidth: 1100 }}>
       <p className="muted">{t("adminItemsHint")}</p>
+      <div className="admin-drop-band admin-xp-block">
+        <div className="admin-drop-levels">
+          <label>
+            {t("adminItemsSellPct")}
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              step="1"
+              value={sellPct}
+              onChange={(e) => {
+                setSellPct(Math.max(0, Math.min(1000, Math.trunc(Number(e.target.value) || 0))));
+                setSellNote("");
+              }}
+            />
+          </label>
+          <span className="muted">{t("adminItemsSellPctHint")}</span>
+        </div>
+        <div className="admin-drop-actions">
+          <button className="gold" disabled={busy} onClick={() => void saveSellPct()}>
+            {t("adminDropsSave")}
+          </button>
+          {sellNote ? <span className="muted">{sellNote}</span> : null}
+        </div>
+      </div>
       <div className="admin-drop-head">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminItemsSearch")} />
         <button className={sort === "level" ? "gold" : ""} onClick={() => setSort("level")}>
@@ -833,11 +1054,14 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
           className="gold"
           onClick={() => {
             setIdLocked(false);
+            setRarityTab("Common");
             setEdit({
               ...EMPTY_ITEM,
               id: `custom_${Date.now().toString(36)}`,
               i18n: { en: { ...EMPTY_LOCALE }, ru: { ...EMPTY_LOCALE }, zh: { ...EMPTY_LOCALE } },
               base_stats: {},
+              stats_by_rarity: EMPTY_RARITY_STATS(),
+              value_by_rarity: EMPTY_RARITY_VALUES(),
             });
           }}
         >
@@ -960,21 +1184,47 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
             </div>
           ) : null}
 
+          <div className="admin-rarity-tabs">
+            {RARITIES.map((r) => (
+              <button key={r} type="button" className={rarityTab === r ? "gold" : ""} onClick={() => setRarityTab(r)}>
+                {t(`rarity_${r}`)}
+              </button>
+            ))}
+          </div>
           <div className="admin-stats-grid">
-            <div className="muted">{t("adminItemsStats")}</div>
+            <div className="muted">
+              {t("adminItemsStats")} · {t(`rarity_${rarityTab}`)}
+            </div>
+            <HoverHint as="span" title={t("adminItemsValue")} text={t("adminItemsValueHint")}>
+              <label>
+                {t("adminItemsValue")}
+                <input
+                  type="number"
+                  min={0}
+                  value={edit.value_by_rarity?.[rarityTab] ?? 0}
+                  onChange={(e) => {
+                    const all = { ...(edit.value_by_rarity || EMPTY_RARITY_VALUES()) };
+                    all[rarityTab] = Math.max(0, Math.trunc(Number(e.target.value) || 0));
+                    setEdit({ ...edit, value_by_rarity: all });
+                  }}
+                />
+              </label>
+            </HoverHint>
             {STAT_KEYS.map((k) => (
               <label key={k}>
                 {t(`stat_${k}`)}
                 <input
                   type="number"
                   step="0.1"
-                  value={edit.base_stats[k] || ""}
+                  value={edit.stats_by_rarity?.[rarityTab]?.[k] || ""}
                   onChange={(e) => {
                     const n = Number(e.target.value);
-                    const next = { ...edit.base_stats };
-                    if (!e.target.value || !Number.isFinite(n)) delete next[k];
-                    else next[k] = n;
-                    setEdit({ ...edit, base_stats: next });
+                    const all = { ...(edit.stats_by_rarity || EMPTY_RARITY_STATS()) };
+                    const row = { ...(all[rarityTab] || {}) };
+                    if (!e.target.value || !Number.isFinite(n)) delete row[k];
+                    else row[k] = n;
+                    all[rarityTab] = row;
+                    setEdit({ ...edit, stats_by_rarity: all, base_stats: rarityTab === "Common" ? row : edit.base_stats });
                   }}
                 />
               </label>
@@ -1007,8 +1257,20 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
             {shown.map((it) => (
               <tr key={it.id}>
                 <td>
-                  {itemName(it.id) || it.i18n.ru.name || it.i18n.en.name}
-                  <div className="muted">{it.id}</div>
+                  <div className="admin-item-name">
+                    <div
+                      className={`cell has-item filled r-${it.rarity_min || "Common"} admin-item-cell`}
+                      onMouseEnter={(e) => setHover({ item: previewItem(it, it.rarity_min || "Common", sellPct), x: e.clientX, y: e.clientY })}
+                      onMouseMove={(e) => setHover({ item: previewItem(it, it.rarity_min || "Common", sellPct), x: e.clientX, y: e.clientY })}
+                      onMouseLeave={() => setHover(null)}
+                    >
+                      <ItemFace item={previewItem(it, it.rarity_min || "Common", sellPct)} />
+                    </div>
+                    <div>
+                      {itemName(it.id) || it.i18n.ru.name || it.i18n.en.name}
+                      <div className="muted">{it.id}</div>
+                    </div>
+                  </div>
                 </td>
                 <td>{it.required_level}</td>
                 <td>{t(`rarity_${it.rarity_min}`)}</td>
@@ -1019,14 +1281,21 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
                       disabled={busy}
                       onClick={() => {
                         setIdLocked(true);
+                        setRarityTab("Common");
                         setEdit({
                           ...it,
+                          value_by_rarity: { ...EMPTY_RARITY_VALUES(), ...(it.value_by_rarity || {}) },
                           i18n: {
                             en: it.i18n?.en || { ...EMPTY_LOCALE },
                             ru: it.i18n?.ru || { ...EMPTY_LOCALE },
                             zh: it.i18n?.zh || { ...EMPTY_LOCALE },
                           },
                           base_stats: it.base_stats || {},
+                          stats_by_rarity: {
+                            ...EMPTY_RARITY_STATS(),
+                            ...(it.stats_by_rarity || {}),
+                            Common: it.stats_by_rarity?.Common || it.base_stats || {},
+                          },
                         });
                       }}
                     >
@@ -1042,6 +1311,7 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
           </tbody>
         </table>
       </div>
+      {hover ? <ItemTooltip item={hover.item} x={hover.x} y={hover.y} /> : null}
     </div>
   );
 }
@@ -1091,6 +1361,9 @@ const EMPTY_POTENCY: EnemyPotency = {
   heavyPct: 20,
 };
 
+type XpConfig = { normal: number; elite: number; boss: number; depthMul: number };
+const XP_KINDS = ["normal", "elite", "boss"] as const;
+
 const EMPTY_ENEMY: AdminEnemy = {
   id: "",
   kind: "normal",
@@ -1113,18 +1386,26 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
   const [enemies, setEnemies] = useState<AdminEnemy[]>([]);
   const [regions, setRegions] = useState<{ id: number; name: string }[]>([]);
   const [icons, setIcons] = useState<string[]>([]);
+  const [xp, setXp] = useState<XpConfig | null>(null);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"depth" | "name">("depth");
   const [edit, setEdit] = useState<AdminEnemy | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [xpNote, setXpNote] = useState("");
   const [idLocked, setIdLocked] = useState(false);
 
   const load = useCallback(async () => {
-    const data = await api<{ enemies: AdminEnemy[]; regions: { id: number; name: string }[]; icons: string[] }>("/admin/enemies");
+    const data = await api<{
+      enemies: AdminEnemy[];
+      regions: { id: number; name: string }[];
+      icons: string[];
+      xp?: XpConfig;
+    }>("/admin/enemies");
     setEnemies(data.enemies);
     setRegions(data.regions || []);
     setIcons(data.icons || []);
+    setXp(data.xp || { normal: 1, elite: 2, boss: 3, depthMul: 1 });
   }, []);
 
   useEffect(() => {
@@ -1170,6 +1451,21 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
     const saved = await api<{ path: string }>("/admin/enemies/icon", { method: "POST", body: { data } });
     setEdit({ ...edit, icon: saved.path });
     setIcons((prev) => (prev.includes(saved.path) ? prev : [saved.path, ...prev]));
+  }
+
+  async function saveXp() {
+    if (!xp || busy) return;
+    setBusy(true);
+    try {
+      const saved = await api<XpConfig>("/admin/xp", { method: "POST", body: xp });
+      setXp(saved);
+      setXpNote(t("adminEnemiesXpSaved"));
+      setErr("");
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function save() {
@@ -1225,6 +1521,54 @@ function EnemiesPanel({ setErr }: { setErr: (s: string) => void }) {
   return (
     <div className="admin-drops" style={{ maxWidth: 1100 }}>
       <p className="muted">{t("adminEnemiesHint")}</p>
+      {xp ? (
+        <div className="admin-drop-band admin-xp-block">
+          <div className="section-title">{t("adminEnemiesXpTitle")}</div>
+          <p className="muted">{t("adminEnemiesXpHint")}</p>
+          <div className="admin-drop-levels">
+            {XP_KINDS.map((kind) => (
+              <label key={kind}>
+                {kind === "normal"
+                  ? t("adminDropsKindNormal")
+                  : kind === "elite"
+                    ? t("adminDropsKindElite")
+                    : t("adminDropsKindBoss")}
+                <input
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={xp[kind]}
+                  onChange={(e) => {
+                    const n = Math.max(0, Math.trunc(Number(e.target.value) || 0));
+                    setXp({ ...xp, [kind]: n });
+                    setXpNote("");
+                  }}
+                />
+              </label>
+            ))}
+            <label>
+              {t("adminEnemiesXpDepthMul")}
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={xp.depthMul}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setXp({ ...xp, depthMul: Number.isFinite(n) && n >= 0 ? n : 0 });
+                  setXpNote("");
+                }}
+              />
+            </label>
+          </div>
+          <div className="admin-drop-actions">
+            <button className="gold" disabled={busy} onClick={() => void saveXp()}>
+              {t("adminDropsSave")}
+            </button>
+            {xpNote ? <span className="muted">{xpNote}</span> : null}
+          </div>
+        </div>
+      ) : null}
       <div className="admin-drop-head">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("adminEnemiesSearch")} />
         <button className={sort === "depth" ? "gold" : ""} onClick={() => setSort("depth")}>
@@ -1581,7 +1925,7 @@ type AdminHero = {
   i18n: Record<"en" | "ru" | "zh", { name: string; blurb: string }>;
 };
 
-const HERO_PASS_KEYS = ["armor", "healthPct", "critChance", "dodge", "luck", "lifesteal", "regen", "damage"] as const;
+const HERO_PASS_KEYS = ["armor", "critChance", "dodge", "luck", "lifesteal", "regen", "damage"] as const;
 
 function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
   const { t, te, heroName, itemName, reloadCatalog } = useI18n();
@@ -1783,7 +2127,7 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
           <div className="admin-hero-grid">
             {HERO_PASS_KEYS.map((key) => (
               <label key={key}>
-                {key === "healthPct" ? t("adminHeroesHealthPct") : t(`stat_${key}`)}
+                {t(`stat_${key}`)}
                 <input
                   type="number"
                   value={edit.pass[key] || 0}

@@ -25,7 +25,7 @@ export const STATS_PER_RARITY: Record<Rarity, number> = {
   Rare: 3,
   Epic: 4,
   Legendary: 5,
-  Mythic: 5,
+  Mythic: 6,
 };
 
 export const RARITY_MULT: Record<Rarity, number> = {
@@ -154,6 +154,44 @@ export function sanitizeStats(raw: Record<string, number> | Stats | null | undef
   return out;
 }
 
+export function isRarityStatMap(raw: unknown): raw is Partial<Record<Rarity, Stats>> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const rec = raw as Record<string, unknown>;
+  return RARITIES.some((r) => rec[r] && typeof rec[r] === "object");
+}
+
+export function parseStatsByRarity(raw: unknown): Partial<Record<Rarity, Stats>> | null {
+  const parsed = typeof raw === "string" ? safeJson(raw) : raw;
+  if (!isRarityStatMap(parsed)) return null;
+  const out: Partial<Record<Rarity, Stats>> = {};
+  for (const r of RARITIES) {
+    if (parsed[r] && typeof parsed[r] === "object") out[r] = sanitizeStats(parsed[r] as Stats);
+  }
+  return out;
+}
+
+export function resolveRarityStats(
+  raw: unknown,
+  rarity: Rarity,
+  fallback: (base: Stats, alreadyScaled?: boolean) => Stats
+): Stats {
+  const map = parseStatsByRarity(raw);
+  if (map) {
+    const hit = map[rarity] || map.Common || map[RARITIES.find((r) => map[r])!];
+    return fallback(sanitizeStats(hit || {}), true);
+  }
+  const parsed = typeof raw === "string" ? safeJson(raw) : raw;
+  return fallback(sanitizeStats((parsed && typeof parsed === "object" ? parsed : {}) as Stats), false);
+}
+
+function safeJson(raw: string) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
 export function exclusiveDamage(stats: Stats, magic: boolean): Stats {
   const out: Stats = {};
   for (const [k, v] of Object.entries(stats)) {
@@ -186,7 +224,7 @@ export function pickStatsForRarity(stats: Stats, rarity: Rarity): Stats {
 export function padItemStats(stats: Stats, pad: [StatKey, number][]): Stats {
   const out: Stats = { ...stats };
   for (const [k, v] of pad) {
-    if (countableStatKeys(out).length >= 5) break;
+    if (countableStatKeys(out).length >= 6) break;
     if (out[k] || CHANCE_STATS.has(k)) continue;
     if (k === "damage" && out.magicDamage) continue;
     if (k === "magicDamage" && out.damage) continue;
@@ -199,27 +237,40 @@ export function statMid(base: number, rarity: Rarity): number {
   return base * (RARITY_MULT[rarity] || 1);
 }
 
+export function statSpread(key: StatKey, mid: number): { min: number; max: number } {
+  let min = roundStat(key, mid * 0.9);
+  let max = roundStat(key, mid * 1.1);
+  if (max < min) max = min;
+  return { min, max };
+}
+
+export function rollAround(key: StatKey, mid: number, unit = Math.random()): number {
+  const { min, max } = statSpread(key, mid);
+  const v = roundStat(key, mid * (0.9 + unit * 0.2));
+  return Math.min(max, Math.max(min, v));
+}
+
 export function rollStatValue(key: StatKey, base: number, rarity: Rarity, unit = Math.random()): number {
-  const mid = statMid(base, rarity);
-  return roundStat(key, mid * (0.9 + unit * 0.2));
+  return rollAround(key, statMid(base, rarity), unit);
 }
 
 export function statRangeFor(key: StatKey, base: number, rarity: Rarity): { min: number; max: number } {
-  const mid = statMid(base, rarity);
-  return { min: roundStat(key, mid * 0.9), max: roundStat(key, mid * 1.1) };
+  return statSpread(key, statMid(base, rarity));
 }
 
 export function rollDefinitionStats(
   base: Stats,
   rarity: Rarity,
   magic: boolean,
-  roll: () => number = Math.random
+  roll: () => number = Math.random,
+  alreadyScaled = false
 ): Stats {
   const clean = pickStatsForRarity(exclusiveDamage(sanitizeStats(base as Record<string, number>), magic), rarity);
   const out: Stats = {};
   for (const [k, b] of Object.entries(clean)) {
     if (!b) continue;
-    out[k as StatKey] = rollStatValue(k as StatKey, b, rarity, roll());
+    const mid = alreadyScaled ? b : statMid(b, rarity);
+    out[k as StatKey] = rollAround(k as StatKey, mid, roll());
   }
   return out;
 }

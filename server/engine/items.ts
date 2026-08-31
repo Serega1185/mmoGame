@@ -7,11 +7,14 @@ import {
   RARITY_WEIGHTS,
   exclusiveDamage,
   hashUnit,
+  isRarityStatMap,
   pickStatsForRarity,
+  resolveRarityStats,
   rollDefinitionStats,
   sanitizeStats,
   schoolFromTags,
   statRangeFor,
+  statSpread,
   type Rarity,
   type StatKey,
   type Stats,
@@ -84,10 +87,12 @@ export function generateInstance(opts: {
   const required = CONFIG.ITEM_REQUIRED_LEVEL ? Math.max(1, def.required_level) : 1;
   const tags = JSON.parse(def.tags || "[]") as string[];
   const magic = tags.includes("magic");
-  const base = sanitizeStats(JSON.parse(def.base_stats) as Stats);
+  const rawStats = JSON.parse(def.base_stats || "{}");
   const id = uuid();
   let ri = 0;
-  const stats = rollDefinitionStats(base, rarity, magic, () => hashUnit(id, ri++));
+  const stats = resolveRarityStats(rawStats, rarity, (base, alreadyScaled) =>
+    rollDefinitionStats(base, rarity, magic, () => hashUnit(id, ri++), alreadyScaled)
+  );
   const affixes: { key: string; value: number }[] = [];
   const row: InstanceRow = {
     id,
@@ -123,19 +128,78 @@ export function destroyInstance(id: string) {
   ).run(now(), id);
 }
 
-export function itemValue(inst: InstanceRow): number {
-  const stats = JSON.parse(inst.stats) as Stats;
-  const sum = Object.values(stats).reduce((a, b) => a + Math.abs(b || 0), 0);
-  const r = RARITY_MULT[inst.rarity as Rarity] || 1;
-  return Math.max(4, Math.round(sum * 2.2 * r));
+export function parseValueByRarity(raw: unknown, fallback = 0): Record<Rarity, number> {
+  let src: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") src = parsed as Record<string, unknown>;
+    } catch {
+      src = {};
+    }
+  } else if (raw && typeof raw === "object") {
+    src = raw as Record<string, unknown>;
+  }
+  const out = {} as Record<Rarity, number>;
+  for (const r of RARITIES) {
+    const n = Math.max(0, Math.trunc(Number(src[r])));
+    out[r] = Number.isFinite(n) ? n : fallback;
+  }
+  return out;
 }
 
-export function instanceStatRanges(base: Stats, rarity: Rarity, magic: boolean) {
+function defValue(definitionId: string, rarity: Rarity, stats: Stats) {
+  const def = db.prepare("SELECT base_value, value_by_rarity FROM item_definitions WHERE id=?").get(definitionId) as
+    | { base_value: number; value_by_rarity: string }
+    | undefined;
+  const r = RARITY_MULT[rarity] || 1;
+  const sum = Object.values(stats).reduce((a, b) => a + Math.abs(b || 0), 0);
+  const auto = Math.max(4, Math.round(sum * 2.2 * r));
+  const byRarity = parseValueByRarity(def?.value_by_rarity);
+  const anyPriced = RARITIES.some((k) => (byRarity[k] || 0) > 0);
+  if (anyPriced) {
+    const priced = byRarity[rarity] || 0;
+    return priced > 0 ? Math.max(1, priced) : auto;
+  }
+  const legacy = Math.max(0, Math.trunc(Number(def?.base_value) || 0));
+  if (legacy > 0) return Math.max(1, legacy);
+  return auto;
+}
+
+const SELL_PCT_KEY = "sell_pct";
+
+export function loadSellPct(): number {
+  const row = db.prepare("SELECT value FROM world_settings WHERE key = ?").get(SELL_PCT_KEY) as { value: string } | undefined;
+  const n = Math.trunc(Number(row?.value));
+  if (!Number.isFinite(n) || n < 0) return 100;
+  return Math.min(1000, n);
+}
+
+export function saveSellPct(raw: unknown): number {
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>).pct : raw;
+  const n = Math.trunc(Number(src));
+  const pct = !Number.isFinite(n) || n < 0 ? 100 : Math.min(1000, n);
+  db.prepare(
+    `INSERT INTO world_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(SELL_PCT_KEY, String(pct));
+  return pct;
+}
+
+export function itemValue(inst: InstanceRow): number {
+  return defValue(inst.definition_id, inst.rarity as Rarity, JSON.parse(inst.stats) as Stats);
+}
+
+export function itemSellGross(inst: InstanceRow): number {
+  return Math.max(0, Math.round((itemValue(inst) * loadSellPct()) / 100));
+}
+
+export function instanceStatRanges(base: Stats, rarity: Rarity, magic: boolean, alreadyScaled = false) {
   const clean = pickStatsForRarity(exclusiveDamage(sanitizeStats(base as Record<string, number>), magic), rarity);
   const ranges: Record<string, { min: number; max: number }> = {};
   for (const [k, b] of Object.entries(clean)) {
     if (!b) continue;
-    ranges[k] = statRangeFor(k as StatKey, b, rarity);
+    ranges[k] = alreadyScaled ? statSpread(k as StatKey, b) : statRangeFor(k as StatKey, b, rarity);
   }
   return ranges;
 }
@@ -147,9 +211,11 @@ export function rerollInstanceFromDefinition(inst: InstanceRow) {
   if (!def) return inst;
   const tags = JSON.parse(def.tags || "[]") as string[];
   const magic = tags.includes("magic");
-  const base = sanitizeStats(JSON.parse(def.base_stats) as Stats);
+  const rawStats = JSON.parse(def.base_stats || "{}");
   let i = 0;
-  const stats = rollDefinitionStats(base, inst.rarity as Rarity, magic, () => hashUnit(inst.id, i++));
+  const stats = resolveRarityStats(rawStats, inst.rarity as Rarity, (base, alreadyScaled) =>
+    rollDefinitionStats(base, inst.rarity as Rarity, magic, () => hashUnit(inst.id, i++), alreadyScaled)
+  );
   inst.stats = JSON.stringify(stats);
   inst.affixes = "[]";
   db.prepare("UPDATE item_instances SET stats = ?, affixes = ?, item_level = 1 WHERE id = ?").run(inst.stats, inst.affixes, inst.id);
@@ -164,7 +230,11 @@ export function hydrate(inst: InstanceRow) {
     : null;
   const tags = def ? (JSON.parse(String(def.tags)) as string[]) : [];
   const magic = tags.includes("magic");
-  const base = def ? sanitizeStats(JSON.parse(String(def.base_stats)) as Stats) : {};
+  const rawBase = def ? JSON.parse(String(def.base_stats || "{}")) : {};
+  const scaled = isRarityStatMap(rawBase);
+  const base = scaled
+    ? sanitizeStats((rawBase[inst.rarity] || rawBase.Common || {}) as Stats)
+    : sanitizeStats(rawBase as Stats);
   const rarity = inst.rarity as Rarity;
   const stats = pickStatsForRarity(
     exclusiveDamage(sanitizeStats(JSON.parse(inst.stats) as Stats), magic),
@@ -174,7 +244,7 @@ export function hydrate(inst: InstanceRow) {
     ...inst,
     stats,
     affixes: [],
-    statRanges: instanceStatRanges(base, rarity, magic),
+    statRanges: instanceStatRanges(base, rarity, magic, scaled),
     magicSchool: schoolFromTags(tags),
     definition: {
       ...def,
@@ -183,6 +253,6 @@ export function hydrate(inst: InstanceRow) {
       tags,
     },
     set: setRow || null,
-    value: itemValue(inst),
+    value: itemSellGross(inst),
   };
 }
