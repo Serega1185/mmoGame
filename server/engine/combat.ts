@@ -14,7 +14,7 @@ import {
 } from "./stats.ts";
 import { loadHeroBase } from "./heroTables.ts";
 import { loadEquip } from "./inventory.ts";
-import { isTalentId } from "./talents.ts";
+import { loadPickedEffects } from "./talents.ts";
 
 export type Combatant = {
   id?: string;
@@ -29,7 +29,7 @@ export type Combatant = {
   burnOnHit?: { chance: number; hits: number; dmg: number };
 };
 
-type Unit = Combatant & {
+type Unit = Omit<Combatant, "talents"> & {
   armorPool: number;
   barrier: number;
   thorns: number;
@@ -126,15 +126,9 @@ export function characterPower(character: { id: string; class: string; level: nu
     const size = tiers[tiers.length - 1]?.pieces || 5;
     setBonuses.push({ set: s.name, setId: s.id, pieces: Math.min(n, size), size, bonus, tiers });
   }
-  const skills = db
-    .prepare(`SELECT cs.skill_id, s.stats FROM character_skills cs JOIN skills s ON s.id = cs.skill_id WHERE cs.character_id = ?`)
-    .all(character.id) as { skill_id: string; stats: string }[];
-  const talentIds: string[] = [];
-  for (const sk of skills) {
-    if (!isTalentId(sk.skill_id)) continue;
-    talentIds.push(sk.skill_id);
-    stats = addStats(stats, sanitizeStats(JSON.parse(sk.stats || "{}")));
-  }
+  const picked = loadPickedEffects(character.id);
+  stats = addStats(stats, picked.stats);
+  const talentIds = picked.effects;
   if (talentIds.includes("iron_skin")) stats.armor = Math.round(stats.armor * 1.15);
   if (talentIds.includes("heavy_hand")) stats.damage = Math.round(stats.damage * 1.2);
   if (talentIds.includes("arcane_might")) stats.magicDamage = Math.round(stats.magicDamage * 1.2);

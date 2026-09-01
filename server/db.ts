@@ -187,6 +187,32 @@ try {
   }
 }
 
+try {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS talent_defs (
+      id TEXT PRIMARY KEY,
+      hero_id TEXT NOT NULL,
+      lane TEXT NOT NULL,
+      tier INTEGER NOT NULL,
+      icon TEXT NOT NULL DEFAULT '',
+      effect TEXT NOT NULL DEFAULT '',
+      stats TEXT NOT NULL DEFAULT '{}',
+      UNIQUE (hero_id, lane, tier)
+    )`
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS talent_i18n (
+      talent_id TEXT NOT NULL REFERENCES talent_defs(id) ON DELETE CASCADE,
+      lang TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (talent_id, lang)
+    )`
+  );
+} catch {
+  /* ignore */
+}
+
 export function now() {
   return Date.now();
 }

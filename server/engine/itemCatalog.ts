@@ -103,14 +103,6 @@ export function localesFor(id: string): Record<CatalogLang, ItemLocale> {
   );
 }
 
-function walkPng(dir: string, urlPrefix: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => /\.(png|webp|jpg|jpeg|svg)$/i.test(f))
-    .map((f) => `${urlPrefix}/${f}`.replace(/\\/g, "/"));
-}
-
 function walkImages(dir: string, urlPrefix: string): string[] {
   if (!fs.existsSync(dir)) return [];
   const out: string[] = [];
@@ -132,8 +124,8 @@ function walkImages(dir: string, urlPrefix: string): string[] {
 }
 
 export function listItemIcons(): string[] {
-  const stock = walkPng(STOCK_DIR, "/assets/64x64");
-  const custom = walkPng(ICON_DIR, "/assets/custom");
+  const stock = walkImages(STOCK_DIR, "/assets/64x64");
+  const custom = walkImages(ICON_DIR, "/assets/custom");
   return [...stock, ...custom];
 }
 

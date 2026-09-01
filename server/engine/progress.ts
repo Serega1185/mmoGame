@@ -49,8 +49,44 @@ export function saveXpConfig(raw: unknown): XpConfig {
   return cfg;
 }
 
-export function xpToNext(level: number) {
-  return Math.max(1, Math.trunc(Number(level) || 1));
+const LEVEL_XP_KEY = "level_xp_mul";
+
+export function defaultLevelXpMul() {
+  return 1;
+}
+
+export function normalizeLevelXpMul(raw: unknown): number {
+  const src =
+    raw && typeof raw === "object"
+      ? (raw as Record<string, unknown>).mul ?? (raw as Record<string, unknown>).value ?? raw
+      : raw;
+  const n = Math.round(Number(src) * 1000) / 1000;
+  if (!Number.isFinite(n) || n <= 0) return defaultLevelXpMul();
+  return Math.min(100, n);
+}
+
+export function loadLevelXpMul(): number {
+  const row = db.prepare("SELECT value FROM world_settings WHERE key = ?").get(LEVEL_XP_KEY) as { value: string } | undefined;
+  if (!row?.value) return defaultLevelXpMul();
+  try {
+    return normalizeLevelXpMul(JSON.parse(row.value));
+  } catch {
+    return normalizeLevelXpMul(row.value);
+  }
+}
+
+export function saveLevelXpMul(raw: unknown): number {
+  const mul = normalizeLevelXpMul(raw);
+  db.prepare(
+    `INSERT INTO world_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(LEVEL_XP_KEY, JSON.stringify({ mul }));
+  return mul;
+}
+
+export function xpToNext(level: number, mul = loadLevelXpMul()) {
+  const lv = Math.max(1, Math.trunc(Number(level) || 1));
+  return Math.max(1, Math.round(lv * mul));
 }
 
 export function xpForFight(depth: number, kind: string, cfg = loadXpConfig()) {

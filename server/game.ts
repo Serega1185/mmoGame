@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { db, now, tx } from "./db.ts";
 import { CONFIG } from "./config.ts";
 import { emptyStats, EQUIP_SLOTS, parseStatsByRarity, RARITIES, sanitizeStats, STAT_KEYS, type Rarity, type Stats } from "./engine/stats.ts";
-import { defaultXpConfig, loadXpConfig, saveXpConfig, xpForFight, xpToNext } from "./engine/progress.ts";
+import { defaultXpConfig, loadLevelXpMul, loadXpConfig, saveLevelXpMul, saveXpConfig, xpForFight, xpToNext } from "./engine/progress.ts";
 import { loadHeroBase, loadHeroCatalog, publicHeroes, seedHeroes, adminSaveHero as writeHero } from "./engine/heroTables.ts";
 import { generateInstance, hydrate, destroyInstance, itemValue, itemSellGross, loadSellPct, parseValueByRarity, saveSellPct, rerollInstanceFromDefinition, rollRarity, type InstanceRow } from "./engine/items.ts";
 import {
@@ -35,7 +35,7 @@ import {
   saveUploadedIcon,
 } from "./engine/itemCatalog.ts";
 import { loadEnemyCatalog, localesForEnemy, saveEnemyI18n } from "./engine/enemyCatalog.ts";
-import { applyTalentPick, canPickTalent, ensureTalentTree, freshTalentTree } from "./engine/talents.ts";
+import { applyTalentPick, adminDeleteTalent, adminListTalents, adminSaveTalent, canPickTalent, ensureTalentTree, freshTalentTree, loadHeroTalents, publicTalentTree } from "./engine/talents.ts";
 import {
   canFlee,
   combatKind,
@@ -138,7 +138,7 @@ export function snapshotCharacter(c: Record<string, unknown>) {
     db.prepare("UPDATE characters SET skill_pending = 0, skill_offers = NULL WHERE id = ?").run(c.id);
     c = { ...c, skill_pending: 0, skill_offers: null };
   }
-  const talentTree = ensureTalentTree(String(c.id), c.talent_tree);
+  const talentTree = publicTalentTree(String(c.class), ensureTalentTree(String(c.id), c.talent_tree, String(c.class)));
   const talentPoints = Number(c.talent_points || 0);
   const march = ensureMarch(c);
   c = { ...c, depth: Number(c.depth || 1), round: Number(c.round || 1) };
@@ -151,6 +151,7 @@ export function snapshotCharacter(c: Record<string, unknown>) {
       depth: Number(c.depth || 1),
       classIcon: hero?.portrait || hero?.icon || "",
       battleIcon: hero?.icon || "",
+      xpNeed: xpToNext(Number(c.level)),
     },
     march: toPublicMarch(march),
     inventory: inv,
@@ -618,13 +619,14 @@ function runCombat(userId: string, character: Record<string, unknown>, kind: "no
       round: Number(character.round || 1),
     });
     const xpGain = xpForFight(Number(character.depth || 1), enemy.kind);
+    const xpMul = loadLevelXpMul();
     let level = Number(character.level);
     let xp = Number(character.xp) + xpGain;
-    let needed = xpToNext(level);
+    let needed = xpToNext(level, xpMul);
     while (xp >= needed) {
       xp -= needed;
       level++;
-      needed = xpToNext(level);
+      needed = xpToNext(level, xpMul);
     }
     const newMax = characterPower({ id: String(character.id), class: String(character.class), level }).maxHp;
     const talentGain = enemy.kind === "boss" ? 1 : 0;
@@ -955,9 +957,10 @@ export function pickTalent(userId: string, talentId: string) {
     const { error, character } = requireAlive(userId);
     if (error || !character) return { error };
     if (Number(character.talent_points || 0) < 1) return { error: "No talent to spend. Slay a boss first." };
-    const tree = ensureTalentTree(String(character.id), character.talent_tree);
-    if (!canPickTalent(tree, talentId)) return { error: "That talent cannot be taken yet." };
-    applyTalentPick(String(character.id), tree, talentId);
+    const nodes = loadHeroTalents(String(character.class));
+    const tree = ensureTalentTree(String(character.id), character.talent_tree, String(character.class));
+    if (!canPickTalent(tree, talentId, nodes)) return { error: "That talent cannot be taken yet." };
+    applyTalentPick(String(character.id), tree, talentId, nodes);
     return { error: null };
   });
 }
@@ -1790,6 +1793,16 @@ export function adminResetXp() {
   return cfg;
 }
 
+export function adminLevelXpMul() {
+  return loadLevelXpMul();
+}
+
+export function adminSaveLevelXpMul(raw: unknown) {
+  const mul = saveLevelXpMul(raw);
+  logGame("ADMIN", "level experience multiply saved");
+  return { mul };
+}
+
 export function adminMapGlobals() {
   return loadMapGlobals();
 }
@@ -1857,6 +1870,22 @@ export function heroRoster() {
 export function adminSaveHero(raw: Record<string, unknown>) {
   const r = writeHero(raw);
   if (!r.error) logGame("ADMIN", `saved hero ${r.id}`);
+  return r;
+}
+
+export function adminTalents(heroId?: string) {
+  return adminListTalents(heroId);
+}
+
+export function adminSaveTalentDef(raw: Record<string, unknown>) {
+  const r = adminSaveTalent(raw);
+  if (!r.error) logGame("ADMIN", `saved talent ${r.id}`);
+  return r;
+}
+
+export function adminRemoveTalent(heroId: string, lane: string, tier: number) {
+  const r = adminDeleteTalent(heroId, lane, tier);
+  if (!r.error) logGame("ADMIN", `removed talent ${r.id}`);
   return r;
 }
 

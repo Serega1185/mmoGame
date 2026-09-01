@@ -3,6 +3,10 @@ import { api, type Item } from "./api";
 import { ItemTooltip } from "./ui";
 import { useI18n } from "./i18n";
 
+const RARITIES = new Set(["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"]);
+const LINK_MD = /\[(.*?)\]\(ITEM_LINK:([a-f0-9-]+)(?::([A-Za-z]+))?\)/;
+const LINK_BARE = /ITEM_LINK:([a-f0-9-]+)(?::([A-Za-z]+))?/;
+
 type Msg = {
   id: string;
   channel: string;
@@ -13,23 +17,36 @@ type Msg = {
   to?: string;
 };
 
+function cleanRarity(raw?: string) {
+  return raw && RARITIES.has(raw) ? raw : "";
+}
+
+function linkIds(body: string) {
+  return [...body.matchAll(/ITEM_LINK:([a-f0-9-]+)/g)].map((m) => m[1]);
+}
+
 function parseBody(
   body: string,
   onEnter: (id: string, x: number, y: number) => void,
   onMove: (x: number, y: number) => void,
   onLeave: () => void,
-  linkedLabel: string
+  linkedLabel: string,
+  rarityOf: (id: string) => string
 ) {
-  const parts = body.split(/(\[.*?\]\(ITEM_LINK:[a-f0-9-]+\)|ITEM_LINK:[a-f0-9-]+)/g);
+  const parts = body.split(/(\[.*?\]\(ITEM_LINK:[a-f0-9-]+(?::[A-Za-z]+)?\)|ITEM_LINK:[a-f0-9-]+(?::[A-Za-z]+)?)/g);
   return parts.map((p, i) => {
-    const m = p.match(/\[(.*?)\]\(ITEM_LINK:([a-f0-9-]+)\)/) || p.match(/ITEM_LINK:([a-f0-9-]+)/);
+    const md = p.match(LINK_MD);
+    const bare = md ? null : p.match(LINK_BARE);
+    const m = md || bare;
     if (m) {
-      const id = m[2] || m[1];
-      const label = m[2] ? m[1] : linkedLabel;
+      const id = md ? m[2] : m[1];
+      const label = md ? m[1] : linkedLabel;
+      const tagged = cleanRarity(md ? m[3] : m[2]);
+      const rarity = rarityOf(id) || tagged;
       return (
         <span
           key={i}
-          className="item-link"
+          className={`item-link${rarity ? ` rarity-${rarity}` : ""}`}
           onMouseEnter={(e) => onEnter(id!, e.clientX, e.clientY)}
           onMouseMove={(e) => onMove(e.clientX, e.clientY)}
           onMouseLeave={onLeave}
@@ -69,6 +86,7 @@ export function ChatDock({
   const [hint, setHint] = useState<{ text: string; x: number; y: number } | null>(null);
   const [privTo, setPrivTo] = useState("");
   const [players, setPlayers] = useState<{ id: string; username: string }[]>([]);
+  const [linkRarity, setLinkRarity] = useState<Record<string, string>>({});
   const box = useRef<HTMLDivElement>(null);
   const cache = useRef(new Map<string, Item>());
   const hoverId = useRef<string | null>(null);
@@ -126,6 +144,32 @@ export function ChatDock({
     }
   }, [linkQueue, onConsumedLink]);
 
+  useEffect(() => {
+    const ids = [...new Set(msgs.flatMap((m) => linkIds(m.body)))];
+    let cancelled = false;
+    void Promise.all(
+      ids.map(async (id) => {
+        if (cache.current.has(id)) {
+          const r = cache.current.get(id)!.rarity;
+          if (!cancelled && r) setLinkRarity((prev) => (prev[id] === r ? prev : { ...prev, [id]: r }));
+          return;
+        }
+        try {
+          const d = await api<{ item: Item }>(`/items/${id}`);
+          cache.current.set(id, d.item);
+          if (!cancelled && d.item.rarity) {
+            setLinkRarity((prev) => (prev[id] === d.item.rarity ? prev : { ...prev, [id]: d.item.rarity }));
+          }
+        } catch {
+          /* gone */
+        }
+      })
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [msgs]);
+
   function send() {
     if (!ws || ws.readyState !== 1 || !text.trim()) return;
     ws.send(JSON.stringify({ type: "chat", channel, body: text, to: privTo || undefined }));
@@ -143,6 +187,7 @@ export function ChatDock({
     try {
       const d = await api<{ item: Item }>(`/items/${id}`);
       cache.current.set(id, d.item);
+      setLinkRarity((prev) => ({ ...prev, [id]: d.item.rarity }));
       if (hoverId.current === id) {
         setPreview({ item: d.item, x, y });
         setHint(null);
@@ -184,21 +229,27 @@ export function ChatDock({
     <div className={`chat-float panel ${open ? "open" : "closed"}`} style={{ left: pos.x, bottom: pos.y }}>
       <div className="chat-float-bar" onMouseDown={onDragStart}>
         <span className="chat-float-title">{t("chatTitle")}</span>
-        <button type="button" onClick={() => setCollapsed((c) => !c)}>
+        <button type="button" className="chat-float-toggle" onClick={() => setCollapsed((c) => !c)}>
           {open ? "▾" : "▴"}
         </button>
       </div>
       {open ? (
-        <div className="chat" style={{ padding: "0 0.7rem 0.7rem" }}>
-          <div className="row" style={{ marginBottom: 6 }}>
+        <div className="chat">
+          <div className="chat-chans">
             {(["GLOBAL", "GUILD", "PRIVATE"] as const).map((c) => (
-              <button key={c} disabled={c === "GUILD" && !canGuild} onClick={() => setChannel(c)} style={{ opacity: channel === c ? 1 : 0.7 }}>
+              <button
+                key={c}
+                type="button"
+                className={channel === c ? "gold" : ""}
+                disabled={c === "GUILD" && !canGuild}
+                onClick={() => setChannel(c)}
+              >
                 {t(`chan${c}`)}
               </button>
             ))}
           </div>
           {channel === "PRIVATE" ? (
-            <select value={privTo} onChange={(e) => setPrivTo(e.target.value)} style={{ marginBottom: 6 }}>
+            <select className="chat-whisper" value={privTo} onChange={(e) => setPrivTo(e.target.value)}>
               <option value="">{t("chooseSoul")}</option>
               {players.filter((p) => p.username !== username).map((p) => (
                 <option key={p.id} value={p.id}>
@@ -211,30 +262,37 @@ export function ChatDock({
             {msgs
               .filter((m) => (channel === "PRIVATE" ? m.channel === "PRIVATE" : m.channel === channel || !m.channel))
               .map((m) => (
-                <div key={m.id}>
-                  <span className="muted">{new Date(m.created_at).toLocaleTimeString()}</span>{" "}
-                  <span className="chan">[{t(`chan${m.channel === "REGION" ? "GLOBAL" : m.channel}`)}]</span> {m.username}:{" "}
-                  {parseBody(
-                    m.body,
-                    hoverLink,
-                    (x, y) => {
-                      setPreview((p) => (p ? { ...p, x, y } : p));
-                      setHint((h) => (h ? { ...h, x, y } : h));
-                    },
-                    leaveLink,
-                    t("linkedItem")
-                  )}
+                <div key={m.id} className="chat-line">
+                  <span className="chat-time">{new Date(m.created_at).toLocaleTimeString()}</span>{" "}
+                  <span className="chat-chan">[{t(`chan${m.channel === "REGION" ? "GLOBAL" : m.channel}`)}]</span>{" "}
+                  <span className="chat-nick">{m.username}</span>
+                  {": "}
+                  <span className="chat-body">
+                    {parseBody(
+                      m.body,
+                      hoverLink,
+                      (x, y) => {
+                        setPreview((p) => (p ? { ...p, x, y } : p));
+                        setHint((h) => (h ? { ...h, x, y } : h));
+                      },
+                      leaveLink,
+                      t("linkedItem"),
+                      (id) => linkRarity[id] || ""
+                    )}
+                  </span>
                 </div>
               ))}
           </div>
-          <div className="row" style={{ marginTop: 6 }}>
+          <div className="chat-compose">
             <input
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
               placeholder={t("speakPh")}
             />
-            <button onClick={send}>{t("speak")}</button>
+            <button type="button" className="gold" onClick={send}>
+              {t("speak")}
+            </button>
           </div>
         </div>
       ) : null}

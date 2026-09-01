@@ -3,6 +3,7 @@ import { api, STAT_KEYS } from "./api";
 import { useI18n } from "./i18n";
 import type { Item } from "./api";
 import { HeroFace, HoverHint, ItemFace, ItemTooltip } from "./ui";
+import { TalentBoard, type TalentLane, type TalentNodeView, type TalentTreeData } from "./TalentTree";
 
 const RARITIES = ["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"] as const;
 const DROP_KINDS = ["normal", "elite", "boss"] as const;
@@ -1327,7 +1328,7 @@ function ItemsPanel({ setErr }: { setErr: (s: string) => void }) {
             </div>
             <label>
               {t("adminItemsIcon")}
-              <input value={edit.icon} onChange={(e) => setEdit({ ...edit, icon: e.target.value })} placeholder="/assets/64x64/bow_01.png" />
+              <input value={edit.icon} onChange={(e) => setEdit({ ...edit, icon: e.target.value })} placeholder="/assets/64x64/sword/sword_01.png" />
             </label>
             <label className="admin-upload">
               {t("adminItemsUpload")}
@@ -2190,12 +2191,15 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
   const [artPick, setArtPick] = useState<"icon" | "portrait">("icon");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [levelXpMul, setLevelXpMul] = useState(1);
+  const [xpNote, setXpNote] = useState("");
 
   const load = useCallback(async () => {
-    const data = await api<{ heroes: AdminHero[]; icons: string[]; items: AdminItem[] }>("/admin/heroes");
+    const data = await api<{ heroes: AdminHero[]; icons: string[]; items: AdminItem[]; levelXpMul?: number }>("/admin/heroes");
     setHeroes(data.heroes.map((h) => ({ ...h, starters: h.starters || [], portrait: h.portrait || "" })));
     setIcons(data.icons || []);
     setKitItems(data.items || []);
+    if (typeof data.levelXpMul === "number" && Number.isFinite(data.levelXpMul)) setLevelXpMul(data.levelXpMul);
   }, []);
 
   useEffect(() => {
@@ -2267,9 +2271,48 @@ function HeroesPanel({ setErr }: { setErr: (s: string) => void }) {
     }
   }
 
+  async function saveLevelXp() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const saved = await api<{ mul: number }>("/admin/heroes/level-xp", { method: "POST", body: { mul: levelXpMul } });
+      setLevelXpMul(saved.mul);
+      setXpNote(t("adminHeroesLevelXpSaved"));
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="admin-drops" style={{ maxWidth: 1100 }}>
       <p className="muted">{t("adminHeroesHint")}</p>
+      <div className="admin-drop-band admin-xp-block">
+        <div className="admin-drop-levels">
+          <label>
+            {t("adminHeroesLevelXpMul")}
+            <input
+              type="number"
+              min={0.01}
+              step="0.1"
+              value={levelXpMul}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setLevelXpMul(Number.isFinite(n) && n > 0 ? n : 1);
+                setXpNote("");
+              }}
+            />
+          </label>
+        </div>
+        <p className="muted">{t("adminHeroesLevelXpHint")}</p>
+        <div className="admin-drop-actions">
+          <button className="gold" disabled={busy} onClick={() => void saveLevelXp()}>
+            {t("adminDropsSave")}
+          </button>
+          {xpNote ? <span className="muted">{xpNote}</span> : null}
+        </div>
+      </div>
       {edit ? (
         <div className="admin-item-edit">
           <div className="admin-icon-row admin-hero-arts">
@@ -2551,6 +2594,265 @@ function GatePanel({ setErr }: { setErr: (s: string) => void }) {
   );
 }
 
+type TalentEdit = {
+  heroId: string;
+  lane: TalentLane;
+  tier: number;
+  icon: string;
+  effect: string;
+  stats: Record<string, number>;
+  names: Record<"en" | "ru" | "zh", string>;
+  descs: Record<"en" | "ru" | "zh", string>;
+};
+
+function blankTalent(heroId: string, lane: TalentLane, tier: number, node?: TalentNodeView | null): TalentEdit {
+  return {
+    heroId,
+    lane,
+    tier,
+    icon: node?.icon || "",
+    effect: node?.effect || "",
+    stats: { ...(node?.stats || {}) },
+    names: {
+      en: node?.names.en || "",
+      ru: node?.names.ru || "",
+      zh: node?.names.zh || "",
+    },
+    descs: {
+      en: node?.descs.en || "",
+      ru: node?.descs.ru || "",
+      zh: node?.descs.zh || "",
+    },
+  };
+}
+
+function TalentsPanel({ setErr }: { setErr: (s: string) => void }) {
+  const { t, te, heroName } = useI18n();
+  const [heroId, setHeroId] = useState("");
+  const [heroes, setHeroes] = useState<string[]>([]);
+  const [tree, setTree] = useState<TalentTreeData>({ taken: [], nodes: [] });
+  const [icons, setIcons] = useState<string[]>([]);
+  const [effects, setEffects] = useState<string[]>([]);
+  const [edit, setEdit] = useState<TalentEdit | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = useCallback(
+    async (id?: string) => {
+      const q = id || heroId;
+      const data = await api<{
+        heroId: string;
+        heroes: string[];
+        effects: string[];
+        nodes: (TalentNodeView & { effect?: string; stats?: Record<string, number> })[];
+        icons: string[];
+      }>(`/admin/talents${q ? `?hero=${encodeURIComponent(q)}` : ""}`);
+      setHeroes(data.heroes || []);
+      setHeroId(data.heroId);
+      setEffects(data.effects || []);
+      setIcons(data.icons || []);
+      setTree({ taken: [], nodes: data.nodes || [] });
+      return data;
+    },
+    [heroId]
+  );
+
+  useEffect(() => {
+    load("").catch((e) => setErr(te(e instanceof Error ? e.message : "Denied")));
+    // first load only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function openSlot(lane: TalentLane, tier: number) {
+    const node = tree.nodes.find((n) => n.lane === lane && n.tier === tier) as
+      | (TalentNodeView & { effect?: string; stats?: Record<string, number> })
+      | undefined;
+    setEdit(blankTalent(heroId, lane, tier, node));
+    setNote(node ? "" : t("adminTalentsEmpty"));
+  }
+
+  async function save() {
+    if (!edit || busy) return;
+    setBusy(true);
+    try {
+      await api("/admin/talents", {
+        method: "POST",
+        body: {
+          heroId: edit.heroId,
+          lane: edit.lane,
+          tier: edit.tier,
+          icon: edit.icon,
+          effect: edit.effect,
+          stats: edit.stats,
+          names: edit.names,
+          descs: edit.descs,
+        },
+      });
+      setNote(t("adminTalentsSaved"));
+      const data = await load(edit.heroId);
+      const node = data.nodes.find((n) => n.lane === edit.lane && n.tier === edit.tier);
+      if (node) setEdit(blankTalent(edit.heroId, edit.lane, edit.tier, node));
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!edit || busy) return;
+    setBusy(true);
+    try {
+      await api("/admin/talents/delete", {
+        method: "POST",
+        body: { heroId: edit.heroId, lane: edit.lane, tier: edit.tier },
+      });
+      setNote(t("adminTalentsDeleted"));
+      await load(edit.heroId);
+      setEdit(blankTalent(edit.heroId, edit.lane, edit.tier));
+    } catch (e) {
+      setErr(te(e instanceof Error ? e.message : "Denied"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadIcon(file: File) {
+    if (!edit) return;
+    const data = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || ""));
+      r.onerror = () => reject(new Error("That is not an image."));
+      r.readAsDataURL(file);
+    });
+    const saved = await api<{ path: string }>("/admin/items/icon", { method: "POST", body: { data } });
+    setEdit({ ...edit, icon: saved.path });
+    setIcons((prev) => (prev.includes(saved.path) ? prev : [saved.path, ...prev]));
+  }
+
+  return (
+    <div className="admin-drops" style={{ maxWidth: 1100 }}>
+      <p className="muted">{t("adminTalentsHint")}</p>
+      <label>
+        {t("adminTalentsHero")}
+        <select
+          value={heroId}
+          onChange={(e) => {
+            const id = e.target.value;
+            setEdit(null);
+            setNote("");
+            void load(id).catch((err) => setErr(te(err instanceof Error ? err.message : "Denied")));
+          }}
+        >
+          {heroes.map((id) => (
+            <option key={id} value={id}>
+              {heroName(id, id)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="admin-talent-board">
+        <TalentBoard
+          tree={tree}
+          onSlot={openSlot}
+          selected={edit ? { lane: edit.lane, tier: edit.tier } : null}
+        />
+      </div>
+      {edit ? (
+        <div className="admin-item-edit">
+          <div className="admin-i18n">
+            {(["en", "ru", "zh"] as const).map((lang) => (
+              <div key={lang} className="admin-i18n-col">
+                <div className="muted">{lang.toUpperCase()}</div>
+                <label>
+                  {t("adminItemsName")}
+                  <input
+                    value={edit.names[lang]}
+                    onChange={(e) => setEdit({ ...edit, names: { ...edit.names, [lang]: e.target.value } })}
+                  />
+                </label>
+                <label>
+                  {t("adminItemsFlavor")}
+                  <input
+                    value={edit.descs[lang]}
+                    onChange={(e) => setEdit({ ...edit, descs: { ...edit.descs, [lang]: e.target.value } })}
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+          <label>
+            {t("adminTalentsEffect")}
+            <select value={edit.effect} onChange={(e) => setEdit({ ...edit, effect: e.target.value })}>
+              {effects.map((id) => (
+                <option key={id || "none"} value={id}>
+                  {id ? id : t("adminTalentsNoEffect")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="admin-icon-row">
+            <div className="admin-icon-preview">{edit.icon ? <img src={edit.icon} alt="" /> : <span className="muted">{t("adminItemsNoArt")}</span>}</div>
+            <label>
+              {t("adminItemsIcon")}
+              <input value={edit.icon} onChange={(e) => setEdit({ ...edit, icon: e.target.value })} />
+            </label>
+            <label className="admin-upload">
+              {t("adminItemsUpload")}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void uploadIcon(f).catch((err) => setErr(te(err instanceof Error ? err.message : "Denied")));
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {icons.length ? (
+            <div className="admin-icon-grid">
+              {icons.map((src) => (
+                <button key={src} type="button" className={edit.icon === src ? "gold" : ""} title={src} onClick={() => setEdit({ ...edit, icon: src })}>
+                  <img src={src} alt="" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="admin-stats-grid">
+            {STAT_KEYS.map((k) => (
+              <label key={k}>
+                {t(`stat_${k}`)}
+                <input
+                  type="number"
+                  step="0.1"
+                  value={edit.stats[k] || ""}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    const stats = { ...edit.stats };
+                    if (!e.target.value || !Number.isFinite(n)) delete stats[k];
+                    else stats[k] = n;
+                    setEdit({ ...edit, stats });
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="admin-drop-actions">
+            <button className="gold" disabled={busy} onClick={() => void save()}>
+              {t("adminGateSave")}
+            </button>
+            <button className="danger" disabled={busy} onClick={() => void remove()}>
+              {t("adminItemsDelete")}
+            </button>
+            {note ? <span className="muted">{note}</span> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AdminView({
   onClose,
   reload,
@@ -2562,7 +2864,7 @@ export function AdminView({
 }) {
   const { t, te, heroName } = useI18n();
   const [tab, setTab] = useState<
-    "wayfarers" | "guilds" | "drops" | "shop" | "map" | "items" | "enemies" | "heroes" | "gate"
+    "wayfarers" | "guilds" | "drops" | "shop" | "map" | "items" | "enemies" | "heroes" | "talents" | "gate"
   >("wayfarers");
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [guilds, setGuilds] = useState<GuildRow[]>([]);
@@ -2628,6 +2930,9 @@ export function AdminView({
         <button className={tab === "heroes" ? "gold" : ""} onClick={() => setTab("heroes")}>
           {t("adminTabHeroes")}
         </button>
+        <button className={tab === "talents" ? "gold" : ""} onClick={() => setTab("talents")}>
+          {t("adminTabTalents")}
+        </button>
         <button className={tab === "gate" ? "gold" : ""} onClick={() => setTab("gate")}>
           {t("adminTabGate")}
         </button>
@@ -2647,6 +2952,8 @@ export function AdminView({
         <EnemiesPanel setErr={setErr} />
       ) : tab === "heroes" ? (
         <HeroesPanel setErr={setErr} />
+      ) : tab === "talents" ? (
+        <TalentsPanel setErr={setErr} />
       ) : tab === "wayfarers" ? (
         <div className="admin-table-wrap">
           <table className="board-table admin-table">

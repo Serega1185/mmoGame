@@ -97,6 +97,7 @@ type Character = {
   class: string;
   level: number;
   xp: number;
+  xpNeed?: number;
   region: number;
   round: number;
   depth: number;
@@ -556,8 +557,9 @@ export default function App() {
 
   async function linkItem(item: Item) {
     try {
-      const d = await api<{ token: string; name: string }>("/items/link", { method: "POST", body: { instanceId: item.id } });
-      setLinkQ(`[${d.name}](${d.token})`);
+      const d = await api<{ token: string; name: string; rarity?: string }>("/items/link", { method: "POST", body: { instanceId: item.id } });
+      const rarity = d.rarity || item.rarity;
+      setLinkQ(`[${d.name}](${d.token}${rarity ? `:${rarity}` : ""})`);
     } catch (e) {
       setErr(te(e instanceof Error ? e.message : "Seal failed"));
     }
@@ -810,7 +812,7 @@ export default function App() {
     fight && !playbackDone ? livePlayerHp : c.hp,
     fight && !playbackDone ? fight.playerMaxHp ?? maxHp : maxHp
   );
-  const xpNeed = Math.max(1, c.level);
+  const xpNeed = Math.max(1, c.xpNeed || Math.max(1, c.level));
   const waitingReplay = !!(fight && !fight.awaiting && !playbackDone);
   const lootOffers = waitingReplay ? [] : game.lootChoices || [];
   const awaiting = !!(fight?.awaiting && !fight.dead);
@@ -1130,6 +1132,7 @@ export default function App() {
                     if (mode === "forge" && it.definition.category !== "ore") setForgeSlots(putForgeSlot(forgeSlots, it.id));
                   }}
                 />
+                <img className="pack-flourish" src="/assets/ui/filigree-center.svg" alt="" />
                 {game.ground.length || game.inventory.some((i) => i.grid_x == null) ? (
                   <>
                     <div className="section-title" style={{ marginTop: 10 }}>
@@ -1153,6 +1156,7 @@ export default function App() {
                   </>
                 ) : null}
               </div>
+          <div className="panel-version">{gate?.version || "1.0.0"}</div>
         </aside>
 
         <main>
@@ -1522,6 +1526,7 @@ export default function App() {
               />
             ) : null}
           </div>
+          <img className="pack-flourish" src="/assets/ui/filigree-center.svg" alt="" />
         </aside>
       </div>
       )}

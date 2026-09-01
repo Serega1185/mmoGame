@@ -6,6 +6,7 @@ import { rerollInstanceFromDefinition, type InstanceRow } from "../engine/items.
 import { seedItemI18n } from "../engine/itemCatalog.ts";
 import { seedEnemyI18n } from "../engine/enemyCatalog.ts";
 import { seedHeroes } from "../engine/heroTables.ts";
+import { seedTalents } from "../engine/talents.ts";
 
 function upsertCatalog() {
   const upSet = db.prepare(
@@ -76,6 +77,7 @@ export function refreshCatalog() {
   seedItemI18n();
   seedEnemyI18n();
   seedHeroes();
+  seedTalents();
 }
 
 export function seedIfEmpty() {

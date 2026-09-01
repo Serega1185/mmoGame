@@ -233,7 +233,7 @@ api.post("/items/link", requireAuth, (req, res) => {
   }
   db.prepare("INSERT INTO item_links (id, instance_id, user_id, created_at) VALUES (?,?,?,?)").run(newId(), id, req.user!.id, now());
   const def = db.prepare("SELECT name FROM item_definitions WHERE id=?").get(inst.definition_id) as { name: string };
-  res.json({ token: `ITEM_LINK:${id}`, name: def.name });
+  res.json({ token: `ITEM_LINK:${id}`, name: def.name, rarity: inst.rarity });
 });
 
 api.get("/shop", requireAuth, (req, res) => {
@@ -728,11 +728,32 @@ api.post("/admin/enemies/delete", requireAuth, requireAdmin, (req, res) => {
 });
 
 api.get("/admin/heroes", requireAuth, requireAdmin, (_req, res) => {
-  res.json({ heroes: game.heroRoster(), icons: game.adminHeroIcons(), items: game.adminItemDefs() });
+  res.json({ heroes: game.heroRoster(), icons: game.adminHeroIcons(), items: game.adminItemDefs(), levelXpMul: game.adminLevelXpMul() });
+});
+
+api.post("/admin/heroes/level-xp", requireAuth, requireAdmin, (req, res) => {
+  res.json(game.adminSaveLevelXpMul(req.body || {}));
 });
 
 api.post("/admin/heroes", requireAuth, requireAdmin, (req, res) => {
   const r = game.adminSaveHero(req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.get("/admin/talents", requireAuth, requireAdmin, (req, res) => {
+  const hero = String(Array.isArray(req.query.hero) ? req.query.hero[0] : req.query.hero || "");
+  res.json({ ...game.adminTalents(hero), icons: game.adminItemIcons() });
+});
+
+api.post("/admin/talents", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminSaveTalentDef(req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+api.post("/admin/talents/delete", requireAuth, requireAdmin, (req, res) => {
+  const r = game.adminRemoveTalent(String(req.body?.heroId || ""), String(req.body?.lane || ""), Number(req.body?.tier));
   if (r.error) return res.status(400).json({ error: r.error });
   res.json(r);
 });
